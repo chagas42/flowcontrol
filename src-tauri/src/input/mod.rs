@@ -17,8 +17,8 @@ pub enum PermissionStatus {
 pub trait InputCapture: Send {
     fn start(&mut self, tx: tokio::sync::mpsc::Sender<InputEvent>) -> Result<(), InputError>;
     fn stop(&mut self);
-    fn permission_status() -> PermissionStatus;
-    fn request_permission();
+    fn permission_status(&self) -> PermissionStatus;
+    fn request_permission(&self);
 }
 
 pub trait InputInjector: Send {

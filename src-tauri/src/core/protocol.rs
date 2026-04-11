@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::screen_layout::ScreenDimensions;
+
 /// Wire format for all messages exchanged between machines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -8,5 +10,5 @@ pub enum Message {
     Scroll { dx: f32, dy: f32 },
     TransitionIn { y_norm: f32 },
     TransitionOut,
-    ScreenInfo { width: u32, height: u32 },
+    ScreenInfo(ScreenDimensions),
 }

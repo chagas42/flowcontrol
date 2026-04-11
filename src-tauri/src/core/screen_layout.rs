@@ -16,7 +16,7 @@ pub enum Edge {
     Bottom,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ScreenDimensions {
     pub width: u32,
     pub height: u32,
