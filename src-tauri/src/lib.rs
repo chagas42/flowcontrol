@@ -1,4 +1,4 @@
-mod core;
+mod engine;
 mod input;
 mod network;
 mod commands;

@@ -1,4 +1,4 @@
-use super::core::screen_layout::Point;
+use super::engine::screen_layout::Point;
 
 #[derive(Debug, Clone)]
 pub enum InputEvent {

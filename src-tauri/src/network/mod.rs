@@ -1,4 +1,4 @@
-use crate::core::protocol::Message;
+use crate::engine::protocol::Message;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionState {
