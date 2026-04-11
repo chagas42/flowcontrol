@@ -94,3 +94,44 @@ refactor: description
 ```bash
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+---
+
+## Last session resume
+
+> This section is rewritten at the end of every session so any machine can pick up from the exact same state.
+
+**Date:** 2026-04-11
+**Commit:** `d5efe8e` — docs: add CLAUDE.md with project context for AI-assisted sessions
+
+### What was done
+
+- Implemented all three `engine` concrete structs (no OS deps, pure math):
+  - `ScreenLayoutImpl` in `engine/screen_layout.rs` — normalizes/denormalizes coordinates, maps neighbor side to watched edge
+  - `EdgeDetectionImpl` in `engine/edge_detection.rs` — threshold-based, fires only on false→true transition, resets on retreat
+  - `StateMachineImpl` in `engine/state_machine.rs` — full transition table, `new()` for server role, `new_as_client()` for client role
+- Created this `CLAUDE.md` file
+- `cargo check` passes — 28 "never used" warnings only (all expected, coordinator not wired yet)
+
+### State machine transition table (implemented)
+
+| State | Event | Next | Commands |
+|---|---|---|---|
+| `Local` | `EdgeCrossed(e)` | `Transitioning` | `[Send(TransitionIn{e.y_norm})]` |
+| `Transitioning` | `TransitionAcknowledged` | `Remote` | `[StartForwarding]` |
+| `Remote` | `TransitionInReceived{y}` | `Local` | `[StopForwarding, AcceptCursor{y}]` |
+| `Remote` | `ConnectionLost` | `Local` | `[StopForwarding]` |
+| any | `ConnectionLost` | `Local` | `[]` |
+| any | other | unchanged | `[]` |
+
+### Next task
+
+Implement the `network/` module. Enter plan mode first.
+
+Scope:
+- TCP server that listens for incoming connections
+- TCP client that connects to a discovered peer
+- mDNS advertisement and browsing using the `mdns-sd` crate (service type `_flowcontrol._tcp`)
+- `NetworkLayerImpl` struct implementing the `NetworkLayer` trait
+- Messages serialized with `bincode`, length-prefixed on the wire
+- `ConnectionState` transitions driven by the TCP lifecycle
