@@ -30,3 +30,53 @@ pub trait StateMachine: Send {
     fn state(&self) -> State;
     fn reset(&mut self);
 }
+
+pub struct StateMachineImpl {
+    state: State,
+}
+
+impl StateMachineImpl {
+    pub fn new() -> Self {
+        Self { state: State::Local }
+    }
+
+    pub fn new_as_client() -> Self {
+        Self { state: State::Remote }
+    }
+}
+
+impl StateMachine for StateMachineImpl {
+    fn handle(&mut self, event: Event) -> Vec<Command> {
+        match (&self.state, event) {
+            (State::Local, Event::EdgeCrossed(e)) => {
+                self.state = State::Transitioning;
+                vec![Command::Send(Message::TransitionIn { y_norm: e.y_norm })]
+            }
+            (State::Transitioning, Event::TransitionAcknowledged) => {
+                self.state = State::Remote;
+                vec![Command::StartForwarding]
+            }
+            (State::Remote, Event::TransitionInReceived { y_norm }) => {
+                self.state = State::Local;
+                vec![Command::StopForwarding, Command::AcceptCursor { y_norm }]
+            }
+            (State::Remote, Event::ConnectionLost) => {
+                self.state = State::Local;
+                vec![Command::StopForwarding]
+            }
+            (_, Event::ConnectionLost) => {
+                self.state = State::Local;
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    fn state(&self) -> State {
+        self.state
+    }
+
+    fn reset(&mut self) {
+        self.state = State::Local;
+    }
+}
