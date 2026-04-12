@@ -58,6 +58,7 @@ const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1: i64 = 11;
 const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2: i64 = 12;
 const K_CG_SCROLL_EVENT_UNIT_PIXEL: u32 = 0;
 
+const K_CG_ANNOTATED_SESSION_EVENT_TAP: u32 = 2;
 const K_CG_NULL_DIRECT_DISPLAY: u32 = 0;
 
 /// Bitmask of CGEventType values the tap intercepts.
@@ -385,7 +386,7 @@ impl InputInjector for MacOSInjector {
                 0,
             );
             if !event.is_null() {
-                CGEventPost(K_CG_HID_EVENT_TAP, event);
+                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
@@ -403,7 +404,7 @@ impl InputInjector for MacOSInjector {
             let event =
                 CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, pos, cg_button);
             if !event.is_null() {
-                CGEventPost(K_CG_HID_EVENT_TAP, event);
+                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
@@ -419,7 +420,7 @@ impl InputInjector for MacOSInjector {
                 dx as i32,
             );
             if !event.is_null() {
-                CGEventPost(K_CG_HID_EVENT_TAP, event);
+                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }

@@ -303,7 +303,7 @@ impl Coordinator {
                     .configure(self.neighbor_side, self.local_dims, dims);
                 if let Some(edge) = self.screen_layout.watched_edge() {
                     self.edge_detection
-                        .configure(edge, self.local_dims, 2.0);
+                        .configure(edge, self.local_dims, 10.0);
                 }
             }
             Message::TransitionOut => {} // unused in v1
