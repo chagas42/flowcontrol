@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
 
   let status: "Stopped" | "Waiting" | "Connected" = "Stopped";
+  let permissionRequired = false;
   let activeSide = 'Right';
   
   let mode: "Server" | "Client" = "Server";
@@ -17,6 +18,9 @@
     });
     listen('status-changed', (event) => {
       status = event.payload as any;
+    });
+    listen('permission-required', () => {
+      permissionRequired = true;
     });
   });
 
@@ -36,11 +40,11 @@
   async function startServer() {
     try {
       status = "Waiting";
-      await invoke('start_server', { 
-        name: "My Mac", 
-        width: 1920, 
-        height: 1080, 
-        side: activeSide 
+      await invoke('start_server', {
+        name: "My Mac",
+        width: window.screen.width,
+        height: window.screen.height,
+        side: activeSide
       });
     } catch (e) {
       console.error(e);
@@ -51,10 +55,10 @@
   async function startClient() {
     try {
       status = "Waiting";
-      await invoke('start_client', { 
-        width: 1920, 
-        height: 1080, 
-        side: activeSide 
+      await invoke('start_client', {
+        width: window.screen.width,
+        height: window.screen.height,
+        side: activeSide
       });
     } catch (e) {
       console.error(e);
@@ -101,6 +105,12 @@
       {/if}
     </div>
   </div>
+
+  {#if permissionRequired}
+    <div class="permission-banner">
+      Accessibility permission required — go to System Settings → Privacy & Security → Accessibility and enable FlowControl.
+    </div>
+  {/if}
 
   <ArrangeDisplays on:layoutChanged={handleLayoutChanged} />
 
@@ -242,5 +252,15 @@
   .btn.small {
     padding: 4px 10px;
     font-size: 12px;
+  }
+
+  .permission-banner {
+    margin: 0 40px 12px 40px;
+    padding: 10px 16px;
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #664d03;
   }
 </style>

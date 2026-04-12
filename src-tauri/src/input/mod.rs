@@ -2,7 +2,11 @@ use super::engine::screen_layout::Point;
 
 #[derive(Debug, Clone)]
 pub enum InputEvent {
+    /// Absolute cursor position — used in Local/Transitioning state.
     MouseMove(Point),
+    /// Raw hardware delta — sent when suppressing=true (Remote state).
+    /// CGEventGetLocation is frozen in suppressing mode; deltas are always valid.
+    MouseDelta { dx: f64, dy: f64 },
     MouseButton { button: u8, pressed: bool },
     Scroll { dx: f32, dy: f32 },
 }

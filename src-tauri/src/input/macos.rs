@@ -51,6 +51,9 @@ const K_CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
 const K_CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
 const K_CG_EVENT_SCROLL_WHEEL: u32 = 22;
 
+const K_CG_MOUSE_EVENT_DELTA_X: i64 = 4;
+const K_CG_MOUSE_EVENT_DELTA_Y: i64 = 5;
+
 const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1: i64 = 11;
 const K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2: i64 = 12;
 const K_CG_SCROLL_EVENT_UNIT_PIXEL: u32 = 0;
@@ -162,8 +165,17 @@ unsafe extern "C" fn tap_callback(
         K_CG_EVENT_MOUSE_MOVED
         | K_CG_EVENT_LEFT_MOUSE_DRAGGED
         | K_CG_EVENT_RIGHT_MOUSE_DRAGGED => {
-            let pt = CGEventGetLocation(event);
-            let _ = ctx.tx.try_send(InputEvent::MouseMove(Point { x: pt.x, y: pt.y }));
+            if ctx.suppressing.load(Ordering::Relaxed) {
+                // In Remote/suppressing mode: CGEventGetLocation returns the frozen
+                // cursor position (never moves because events are suppressed). Use
+                // hardware deltas which are always valid.
+                let dx = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X) as f64;
+                let dy = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_Y) as f64;
+                let _ = ctx.tx.try_send(InputEvent::MouseDelta { dx, dy });
+            } else {
+                let pt = CGEventGetLocation(event);
+                let _ = ctx.tx.try_send(InputEvent::MouseMove(Point { x: pt.x, y: pt.y }));
+            }
         }
         K_CG_EVENT_LEFT_MOUSE_DOWN => {
             let _ = ctx.tx.try_send(InputEvent::MouseButton { button: 0, pressed: true });

@@ -51,6 +51,11 @@ pub struct Coordinator {
     /// Physical side of the screen where the remote machine sits.
     neighbor_side: NeighborSide,
 
+    /// Virtual cursor position used while in Remote state (suppressing=true).
+    /// Accumulates hardware deltas because CGEventGetLocation is frozen when
+    /// events are suppressed.
+    virtual_pos: crate::engine::screen_layout::Point,
+
     /// Channel to receive manual connection triggers from frontend
     connect_rx: mpsc::Receiver<String>,
     app_handle: Option<AppHandle>,
@@ -83,6 +88,7 @@ impl Coordinator {
             network_rx,
             local_dims,
             neighbor_side: side,
+            virtual_pos: crate::engine::screen_layout::Point { x: 0.0, y: 0.0 },
             connect_rx,
             app_handle,
         }
@@ -107,12 +113,7 @@ impl Coordinator {
     /// Start as the server: advertise via mDNS, capture input, run event loop.
     pub async fn run_as_server(&mut self, name: &str) -> Result<(), NetworkError> {
         self.network.start_server(name).await?;
-
-        #[cfg(target_os = "macos")]
-        self.capture
-            .start(self.input_tx.clone())
-            .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
-
+        self.start_capture();
         self.event_loop().await;
         Ok(())
     }
@@ -121,16 +122,25 @@ impl Coordinator {
     /// Call `network.connect(peer)` separately after peers are discovered.
     pub async fn run_as_client(&mut self) -> Result<(), NetworkError> {
         self.network.start_client().await?;
-
-        #[cfg(target_os = "macos")]
-        {
-            self.capture
-                .start(self.input_tx.clone())
-                .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
-        }
-
+        self.start_capture();
         self.event_loop().await;
         Ok(())
+    }
+
+    /// Non-fatal capture start. If Accessibility permission is not granted,
+    /// emits `permission-required` to the frontend and continues — network
+    /// events (injection, coordination) still work; only edge-detection and
+    /// local button/scroll forwarding are affected until permission is granted.
+    fn start_capture(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = self.capture.start(self.input_tx.clone()) {
+                eprintln!("[coordinator] capture failed: {e}");
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("permission-required", ());
+                }
+            }
+        }
     }
 
     /// Graceful shutdown: stop capture, stop network.
@@ -183,12 +193,22 @@ impl Coordinator {
             }
             State::Remote => {
                 match event {
-                    InputEvent::MouseMove(pt) => {
-                        let norm = self.screen_layout.map_to_remote(pt);
+                    InputEvent::MouseDelta { dx, dy } => {
+                        // While suppressing, CGEventGetLocation is frozen at the edge.
+                        // Accumulate hardware deltas into virtual_pos instead.
+                        let w = self.local_dims.width as f64;
+                        let h = self.local_dims.height as f64;
+                        self.virtual_pos.x = (self.virtual_pos.x + dx).clamp(0.0, w - 1.0);
+                        self.virtual_pos.y = (self.virtual_pos.y + dy).clamp(0.0, h - 1.0);
+                        let norm = self.screen_layout.map_to_remote(self.virtual_pos);
                         let _ = self
                             .network
                             .send(Message::MouseMove { x_norm: norm.x, y_norm: norm.y })
                             .await;
+                    }
+                    InputEvent::MouseMove(_) => {
+                        // Absolute events arrive briefly before suppressing kicks in.
+                        // Ignore them in Remote state — virtual_pos is the source of truth.
                     }
                     InputEvent::MouseButton { button, pressed } => {
                         let _ = self
@@ -288,6 +308,12 @@ impl Coordinator {
                 Command::StartForwarding => {
                     #[cfg(target_os = "macos")]
                     {
+                        // Seed virtual_pos at screen center so delta accumulation
+                        // starts from a neutral position.
+                        self.virtual_pos = crate::engine::screen_layout::Point {
+                            x: self.local_dims.width as f64 / 2.0,
+                            y: self.local_dims.height as f64 / 2.0,
+                        };
                         self.capture.suppressing.store(true, Ordering::SeqCst);
                         self.injector.hide_cursor();
                     }
