@@ -58,7 +58,11 @@ impl StateMachine for StateMachineImpl {
             }
             (State::Remote, Event::TransitionInReceived { y_norm }) => {
                 self.state = State::Local;
-                vec![Command::StopForwarding, Command::AcceptCursor { y_norm }]
+                vec![
+                    Command::StopForwarding,
+                    Command::AcceptCursor { y_norm },
+                    Command::Send(Message::Ack),
+                ]
             }
             (State::Remote, Event::ConnectionLost) => {
                 self.state = State::Local;

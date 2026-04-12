@@ -22,7 +22,7 @@ pub trait InputCapture: Send {
 }
 
 pub trait InputInjector: Send {
-    fn inject_move(&self, x_norm: f32, y_norm: f32);
+    fn inject_move(&self, pos: Point);
     fn inject_button(&self, button: u8, pressed: bool);
     fn inject_scroll(&self, dx: f32, dy: f32);
     fn hide_cursor(&self);

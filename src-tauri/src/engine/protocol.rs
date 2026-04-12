@@ -10,5 +10,7 @@ pub enum Message {
     Scroll { dx: f32, dy: f32 },
     TransitionIn { y_norm: f32 },
     TransitionOut,
+    /// Acknowledges receipt of TransitionIn. Sender moves to Remote + StartForwarding.
+    Ack,
     ScreenInfo(ScreenDimensions),
 }
