@@ -9,7 +9,10 @@ use crate::engine::screen_layout::{NeighborSide, ScreenDimensions};
 
 // Store the JoinHandle so we can abort the spawned event loop.
 // The Coordinator's Drop impl will ensure cleanup (stop capture, stop network).
-pub struct AppState(pub Arc<Mutex<Option<JoinHandle<()>>>>);
+pub struct AppState {
+    pub handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    pub connect_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<String>>>>,
+}
 
 #[derive(Deserialize)]
 pub enum SideParam {
@@ -37,14 +40,16 @@ pub async fn start_server(
     height: u32,
     side: SideParam,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut lock = state.0.lock().await;
+    let mut lock = state.handle.lock().await;
 
     if lock.is_some() {
         return Err("A coordinator is already running".into());
     }
 
-    let mut coordinator = Coordinator::new_server(ScreenDimensions { width, height }, side.into());
+    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    let mut coordinator = Coordinator::new_server(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
     
     let handle = tokio::spawn(async move {
         // Run until aborted
@@ -52,6 +57,7 @@ pub async fn start_server(
     });
 
     *lock = Some(handle);
+    *state.connect_tx.lock().await = Some(tx);
     Ok(())
 }
 
@@ -61,28 +67,46 @@ pub async fn start_client(
     height: u32,
     side: SideParam,
     state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut lock = state.0.lock().await;
+    let mut lock = state.handle.lock().await;
 
     if lock.is_some() {
         return Err("A coordinator is already running".into());
     }
 
-    let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into());
+    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
 
     let handle = tokio::spawn(async move {
         let _ = coordinator.run_as_client().await;
     });
 
     *lock = Some(handle);
+    *state.connect_tx.lock().await = Some(tx);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn stop_coordinator(state: State<'_, AppState>) -> Result<(), String> {
-    let mut lock = state.0.lock().await;
+    let mut lock = state.handle.lock().await;
     if let Some(handle) = lock.take() {
         handle.abort();
     }
+    *state.connect_tx.lock().await = None;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn connect_to_peer(
+    peer_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let tx = state.connect_tx.lock().await.clone();
+    if let Some(tx) = tx {
+        tx.send(peer_id).await.map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Coordinator not running".into())
+    }
 }

@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use tauri::{AppHandle, Emitter};
 
 use tokio::sync::mpsc;
 
@@ -49,6 +50,10 @@ pub struct Coordinator {
     local_dims: ScreenDimensions,
     /// Physical side of the screen where the remote machine sits.
     neighbor_side: NeighborSide,
+
+    /// Channel to receive manual connection triggers from frontend
+    connect_rx: mpsc::Receiver<String>,
+    app_handle: Option<AppHandle>,
 }
 
 impl Coordinator {
@@ -56,6 +61,8 @@ impl Coordinator {
         state_machine: StateMachineImpl,
         local_dims: ScreenDimensions,
         side: NeighborSide,
+        app_handle: Option<AppHandle>,
+        connect_rx: mpsc::Receiver<String>,
     ) -> Self {
         let (input_tx, input_rx) = mpsc::channel::<InputEvent>(64);
         let (net_tx, network_rx) = mpsc::channel::<NetworkEvent>(32);
@@ -76,19 +83,21 @@ impl Coordinator {
             network_rx,
             local_dims,
             neighbor_side: side,
+            connect_rx,
+            app_handle,
         }
     }
 
     /// Coordinator seeded as the server (physical mouse machine).
     /// State machine starts in `Local`.
-    pub fn new_server(local_dims: ScreenDimensions, side: NeighborSide) -> Self {
-        Self::new_inner(StateMachineImpl::new(), local_dims, side)
+    pub fn new_server(local_dims: ScreenDimensions, side: NeighborSide, app_handle: Option<AppHandle>, connect_rx: mpsc::Receiver<String>) -> Self {
+        Self::new_inner(StateMachineImpl::new(), local_dims, side, app_handle, connect_rx)
     }
 
     /// Coordinator seeded as the client (display-only machine).
     /// State machine starts in `Remote`.
-    pub fn new_client(local_dims: ScreenDimensions, side: NeighborSide) -> Self {
-        Self::new_inner(StateMachineImpl::new_as_client(), local_dims, side)
+    pub fn new_client(local_dims: ScreenDimensions, side: NeighborSide, app_handle: Option<AppHandle>, connect_rx: mpsc::Receiver<String>) -> Self {
+        Self::new_inner(StateMachineImpl::new_as_client(), local_dims, side, app_handle, connect_rx)
     }
 
     // -----------------------------------------------------------------------
@@ -147,6 +156,13 @@ impl Coordinator {
                 ev = self.network_rx.recv() => {
                     let Some(ev) = ev else { break };
                     self.on_network(ev).await;
+                }
+                peer_id = self.connect_rx.recv() => {
+                    let Some(id) = peer_id else { break };
+                    let peers = self.network.peers();
+                    if let Some(p) = peers.iter().find(|p| p.id == id) {
+                        let _ = self.network.connect(p).await;
+                    }
                 }
             }
         }
@@ -208,7 +224,11 @@ impl Coordinator {
             NetworkEvent::MessageReceived(msg) => {
                 self.on_message(msg).await;
             }
-            // PeersUpdated: frontend will query via commands.rs (v1)
+            NetworkEvent::PeersUpdated(peers) => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("peers-updated", peers);
+                }
+            }
             _ => {}
         }
     }

@@ -11,7 +11,10 @@ use tokio::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_state = commands::AppState(Arc::new(Mutex::new(None)));
+    let app_state = commands::AppState {
+        handle: Arc::new(Mutex::new(None)),
+        connect_tx: Arc::new(Mutex::new(None)),
+    };
 
     tauri::Builder::default()
         .manage(app_state)
@@ -19,6 +22,7 @@ pub fn run() {
             commands::start_server,
             commands::start_client,
             commands::stop_coordinator,
+            commands::connect_to_peer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running flowcontrol");

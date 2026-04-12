@@ -23,7 +23,7 @@ pub enum ConnectionState {
     Connected,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Peer {
     pub id: String,
     pub name: String,
