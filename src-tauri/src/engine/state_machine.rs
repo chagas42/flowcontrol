@@ -68,6 +68,9 @@ impl StateMachine for StateMachineImpl {
                 self.state = State::Local;
                 vec![Command::StopForwarding]
             }
+            (State::Remote, Event::ConnectionEstablished) => {
+                vec![Command::StartForwarding]
+            }
             (_, Event::ConnectionLost) => {
                 self.state = State::Local;
                 vec![]

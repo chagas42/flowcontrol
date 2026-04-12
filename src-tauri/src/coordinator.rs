@@ -127,8 +127,6 @@ impl Coordinator {
             self.capture
                 .start(self.input_tx.clone())
                 .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
-            // Client starts in Remote — cursor is hidden until AcceptCursor fires.
-            self.injector.hide_cursor();
         }
 
         self.event_loop().await;
