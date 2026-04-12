@@ -167,9 +167,21 @@ impl Coordinator {
                 }
                 peer_id = self.connect_rx.recv() => {
                     let Some(id) = peer_id else { break };
+                    // Try as mDNS peer ID first, then as bare IP (direct connect).
                     let peers = self.network.peers();
                     if let Some(p) = peers.iter().find(|p| p.id == id) {
                         let _ = self.network.connect(p).await;
+                    } else {
+                        // Accept "192.168.x.x" or "192.168.x.x:7878"
+                        use std::net::SocketAddr;
+                        let addr_str = if id.contains(':') {
+                            id.clone()
+                        } else {
+                            format!("{}:{}", id, 7878)
+                        };
+                        if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+                            let _ = self.network.connect_direct(addr).await;
+                        }
                     }
                 }
             }

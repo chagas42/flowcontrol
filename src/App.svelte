@@ -12,6 +12,8 @@
   
   let mode: "Server" | "Client" = "Server";
   let peers: Array<{ id: string, name: string }> = [];
+  let directIp = '';
+  let permissionLoopTimeout = false;
 
   onMount(() => {
     listen('peers-updated', (event) => {
@@ -85,14 +87,23 @@
   async function requestPermission() {
     // Open System Settings once — no dialog loop
     await invoke('request_accessibility_permission');
+    permissionLoopTimeout = false;
 
-    // Poll silently (no prompt) until user toggles on
+    let polls = 0;
+    // Poll silently (no prompt) until user enables the toggle
     const interval = setInterval(async () => {
+      polls++;
+      if (polls > 20) { // 30 seconds
+        clearInterval(interval);
+        permissionLoopTimeout = true;
+        return;
+      }
       const ok: boolean = await invoke('check_accessibility_permission');
       if (ok) {
         clearInterval(interval);
         permissionRequired = false;
         permissionGranted = true;
+        permissionLoopTimeout = false;
         // Re-start coordinator so capture gets retried with permission
         if (status !== 'Stopped') {
           const prevMode = mode;
@@ -102,6 +113,11 @@
         }
       }
     }, 1500);
+  }
+
+  async function connectDirect() {
+    if (!directIp.trim()) return;
+    await connectToPeer(directIp.trim());
   }
 
   function toggleMode(newMode: "Server" | "Client") {
@@ -136,6 +152,11 @@
       <button class="btn primary small" on:click={requestPermission}>Open System Settings</button>
     </div>
   {/if}
+  {#if permissionLoopTimeout}
+    <div class="permission-banner">
+      <span>Toggle is ON but still not detected? The app binary changed — remove FlowControl from the Accessibility list, quit the app, reopen it, and re-add it.</span>
+    </div>
+  {/if}
   {#if permissionGranted}
     <div class="permission-ok">Accessibility granted — capture active.</div>
   {/if}
@@ -147,7 +168,7 @@
       <p class="search-text">Searching for servers on the local network...</p>
     {:else}
       <div class="peer-list">
-        <h3>Available Macs to connect:</h3>
+        <h3>Available Macs:</h3>
         {#each peers as peer}
           <div class="peer-item">
             <span>{peer.name}</span>
@@ -156,6 +177,17 @@
         {/each}
       </div>
     {/if}
+    <div class="direct-connect">
+      <span class="direct-label">Direct IP (if not discovered):</span>
+      <input
+        class="ip-input"
+        type="text"
+        placeholder="192.168.1.x"
+        bind:value={directIp}
+        on:keydown={(e) => e.key === 'Enter' && connectDirect()}
+      />
+      <button class="btn primary small" on:click={connectDirect}>Connect</button>
+    </div>
   {/if}
 </main>
 
@@ -304,5 +336,31 @@
     border-radius: 6px;
     font-size: 13px;
     color: #1a5e2a;
+  }
+
+  .direct-connect {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 40px 16px 40px;
+    padding: 10px 16px;
+    background: white;
+    border: 1px solid var(--mac-border);
+    border-radius: 6px;
+  }
+
+  .direct-label {
+    font-size: 13px;
+    color: #666;
+    white-space: nowrap;
+  }
+
+  .ip-input {
+    flex: 1;
+    padding: 4px 8px;
+    border: 1px solid #d1d1d1;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: ui-monospace, monospace;
   }
 </style>

@@ -174,7 +174,12 @@ impl NetworkLayer for NetworkLayerImpl {
         let ip = Self::local_ip()
             .ok_or_else(|| NetworkError::ConnectionFailed("cannot determine local IP".into()))?;
 
-        let host_name = format!("{name}.local.");
+        // DNS hostnames must not contain spaces or special chars.
+        let host_slug: String = name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect();
+        let host_name = format!("{host_slug}.local.");
         let service_info = ServiceInfo::new(SERVICE_TYPE, name, &host_name, ip, PORT, None)
             .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
 
@@ -305,29 +310,7 @@ impl NetworkLayer for NetworkLayerImpl {
             .ok_or_else(|| {
                 NetworkError::ConnectionFailed(format!("unknown peer: {}", peer.id))
             })?;
-
-        self.set_state(ConnectionState::Connecting);
-
-        let stream = TcpStream::connect(addr)
-            .await
-            .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
-
-        let shutdown_tx = self
-            .shutdown_tx
-            .get_or_insert_with(|| broadcast::channel::<()>(1).0)
-            .clone();
-
-        self.set_state(ConnectionState::Connected);
-
-        Self::spawn_connection(
-            stream,
-            self.event_tx.clone(),
-            self.state.clone(),
-            self.write_tx.clone(),
-            shutdown_tx,
-        );
-
-        Ok(())
+        self.connect_addr(addr).await
     }
 
     async fn send(&self, msg: Message) -> Result<(), NetworkError> {
@@ -366,5 +349,37 @@ impl NetworkLayer for NetworkLayerImpl {
             .try_send(NetworkEvent::StateChanged(ConnectionState::Disconnected));
         self.peers.lock().unwrap().clear();
         self.peer_addrs.lock().unwrap().clear();
+    }
+}
+
+impl NetworkLayerImpl {
+    /// Connect directly to a known IP:port, bypassing mDNS discovery.
+    pub async fn connect_direct(&mut self, addr: std::net::SocketAddr) -> Result<(), NetworkError> {
+        self.connect_addr(addr).await
+    }
+
+    async fn connect_addr(&mut self, addr: std::net::SocketAddr) -> Result<(), NetworkError> {
+        self.set_state(ConnectionState::Connecting);
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
+
+        let shutdown_tx = self
+            .shutdown_tx
+            .get_or_insert_with(|| broadcast::channel::<()>(1).0)
+            .clone();
+
+        self.set_state(ConnectionState::Connected);
+
+        Self::spawn_connection(
+            stream,
+            self.event_tx.clone(),
+            self.state.clone(),
+            self.write_tx.clone(),
+            shutdown_tx,
+        );
+
+        Ok(())
     }
 }
