@@ -101,37 +101,36 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 > This section is rewritten at the end of every session so any machine can pick up from the exact same state.
 
-**Date:** 2026-04-11
-**Commit:** `d5efe8e` — docs: add CLAUDE.md with project context for AI-assisted sessions
+**Date:** 2026-04-12
+**Commit:** `71d57bd` — feat(network): implement NetworkLayerImpl with TCP and mDNS discovery
 
 ### What was done
 
-- Implemented all three `engine` concrete structs (no OS deps, pure math):
-  - `ScreenLayoutImpl` in `engine/screen_layout.rs` — normalizes/denormalizes coordinates, maps neighbor side to watched edge
-  - `EdgeDetectionImpl` in `engine/edge_detection.rs` — threshold-based, fires only on false→true transition, resets on retreat
-  - `StateMachineImpl` in `engine/state_machine.rs` — full transition table, `new()` for server role, `new_as_client()` for client role
-- Created this `CLAUDE.md` file
-- `cargo check` passes — 28 "never used" warnings only (all expected, coordinator not wired yet)
+- Implemented `NetworkLayerImpl` in `src/network/mod.rs`
+  - TCP server: binds `0.0.0.0:7878`, advertises `_flowcontrol._tcp.local.` via mDNS, accepts one connection
+  - TCP client: browses `_flowcontrol._tcp.local.` via mDNS, populates peers list
+  - `connect(peer)`: TCP dial to resolved peer address, spawns reader/writer tasks
+  - `send(msg)`: enqueues `Message` to writer task channel (capacity 64)
+  - Wire format: 4-byte big-endian length prefix + `bincode` payload per frame
+  - Shutdown: `broadcast::channel` signals all spawned tasks to exit cleanly
+  - `NetworkEvent` enum for coordinator: `MessageReceived`, `StateChanged`, `PeersUpdated`
+- Added `mdns-sd = "0.11"` to `Cargo.toml`
+- `cargo check` passes — 33 "never used" warnings only (expected, coordinator not wired yet)
 
-### State machine transition table (implemented)
+### Architecture note: coordinator channel
 
-| State | Event | Next | Commands |
-|---|---|---|---|
-| `Local` | `EdgeCrossed(e)` | `Transitioning` | `[Send(TransitionIn{e.y_norm})]` |
-| `Transitioning` | `TransitionAcknowledged` | `Remote` | `[StartForwarding]` |
-| `Remote` | `TransitionInReceived{y}` | `Local` | `[StopForwarding, AcceptCursor{y}]` |
-| `Remote` | `ConnectionLost` | `Local` | `[StopForwarding]` |
-| any | `ConnectionLost` | `Local` | `[]` |
-| any | other | unchanged | `[]` |
+`NetworkLayerImpl::new(event_tx: mpsc::Sender<NetworkEvent>)` — the coordinator creates the channel and passes the sender. It receives on the receiver side.
 
 ### Next task
 
-Implement the `network/` module. Enter plan mode first.
+Implement `input::macos` — CGEventTap capture + CGEventPost injection. Enter plan mode first.
 
 Scope:
-- TCP server that listens for incoming connections
-- TCP client that connects to a discovered peer
-- mDNS advertisement and browsing using the `mdns-sd` crate (service type `_flowcontrol._tcp`)
-- `NetworkLayerImpl` struct implementing the `NetworkLayer` trait
-- Messages serialized with `bincode`, length-prefixed on the wire
-- `ConnectionState` transitions driven by the TCP lifecycle
+- `MacOSCapture` struct implementing `InputCapture`
+- `MacOSInjector` struct implementing `InputInjector`
+- `permission_status()` → `AXIsProcessTrusted()`
+- `request_permission()` → `AXIsProcessTrustedWithOptions` with prompt option
+- `start()` → create `CGEventTap`, attach `CFRunLoopSource`, spawn thread to drive `CFRunLoop`
+- On each event: convert `CGPoint` → `Point`, `try_send` to bounded channel (capacity 64, drop on full)
+- `stop()` → disable tap, stop run loop
+- All code gated with `#[cfg(target_os = "macos")]`
