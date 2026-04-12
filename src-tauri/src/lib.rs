@@ -23,6 +23,7 @@ pub fn run() {
             commands::start_client,
             commands::stop_coordinator,
             commands::connect_to_peer,
+            commands::request_accessibility_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running flowcontrol");

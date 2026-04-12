@@ -7,6 +7,7 @@
 
   let status: "Stopped" | "Waiting" | "Connected" = "Stopped";
   let permissionRequired = false;
+  let permissionGranted = false;
   let activeSide = 'Right';
   
   let mode: "Server" | "Client" = "Server";
@@ -21,6 +22,7 @@
     });
     listen('permission-required', () => {
       permissionRequired = true;
+      permissionGranted = false;
     });
   });
 
@@ -80,6 +82,31 @@
     peers = [];
   }
 
+  async function requestPermission() {
+    const granted: boolean = await invoke('request_accessibility_permission');
+    if (granted) {
+      permissionRequired = false;
+      permissionGranted = true;
+    } else {
+      // System Settings opened — poll every second until granted
+      const interval = setInterval(async () => {
+        const ok: boolean = await invoke('request_accessibility_permission');
+        if (ok) {
+          clearInterval(interval);
+          permissionRequired = false;
+          permissionGranted = true;
+          // Re-start coordinator so capture gets retried
+          if (status !== 'Stopped') {
+            const prevMode = mode;
+            await stopService();
+            if (prevMode === 'Server') await startServer();
+            else await startClient();
+          }
+        }
+      }, 1000);
+    }
+  }
+
   function toggleMode(newMode: "Server" | "Client") {
     if (status !== "Stopped") stopService();
     mode = newMode;
@@ -108,8 +135,12 @@
 
   {#if permissionRequired}
     <div class="permission-banner">
-      Accessibility permission required — go to System Settings → Privacy & Security → Accessibility and enable FlowControl.
+      <span>Accessibility permission required — FlowControl needs it to capture mouse events.</span>
+      <button class="btn primary small" on:click={requestPermission}>Open System Settings</button>
     </div>
+  {/if}
+  {#if permissionGranted}
+    <div class="permission-ok">Accessibility granted — capture active.</div>
   {/if}
 
   <ArrangeDisplays on:layoutChanged={handleLayoutChanged} />
@@ -262,5 +293,19 @@
     border-radius: 6px;
     font-size: 13px;
     color: #664d03;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .permission-ok {
+    margin: 0 40px 12px 40px;
+    padding: 10px 16px;
+    background: #d1f5d3;
+    border: 1px solid #34c759;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #1a5e2a;
   }
 </style>

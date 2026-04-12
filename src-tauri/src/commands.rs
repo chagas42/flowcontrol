@@ -4,6 +4,11 @@ use tokio::task::JoinHandle;
 use serde::Deserialize;
 use tauri::State;
 
+#[cfg(target_os = "macos")]
+use crate::input::{InputCapture, PermissionStatus};
+#[cfg(target_os = "macos")]
+use crate::input::macos::MacOSCapture;
+
 use crate::coordinator::Coordinator;
 use crate::engine::screen_layout::{NeighborSide, ScreenDimensions};
 
@@ -95,6 +100,24 @@ pub async fn stop_coordinator(state: State<'_, AppState>) -> Result<(), String> 
     }
     *state.connect_tx.lock().await = None;
     Ok(())
+}
+
+/// Opens System Settings → Accessibility for this app. Returns whether
+/// permission is already granted (true = no need to restart).
+#[tauri::command]
+pub async fn request_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let capture = MacOSCapture::new();
+        if capture.permission_status() == PermissionStatus::Granted {
+            return true;
+        }
+        capture.request_permission();
+        // Check immediately in case it was just toggled on
+        return capture.permission_status() == PermissionStatus::Granted;
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
 }
 
 #[tauri::command]
