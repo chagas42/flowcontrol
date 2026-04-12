@@ -1,89 +1,109 @@
-<script>
-  import svelteLogo from './assets/svelte.svg'
-  import viteLogo from './assets/vite.svg'
-  import heroImg from './assets/hero.png'
-  import Counter from './lib/Counter.svelte'
+<script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import ArrangeDisplays from './lib/ArrangeDisplays.svelte';
+  import ConnectionStatus from './lib/ConnectionStatus.svelte';
+
+  let status: "Stopped" | "Waiting" | "Connected" = "Stopped";
+  let activeSide = 'Right';
+
+  async function handleLayoutChanged(event: CustomEvent<{ side: string }>) {
+    activeSide = event.detail.side;
+    if (status !== 'Stopped') {
+      try {
+        await invoke('stop_coordinator');
+        await startServer();
+      } catch(e) {
+        console.error(e);
+      }
+    }
+  }
+
+  async function startServer() {
+    try {
+      status = "Waiting";
+      await invoke('start_server', { 
+        name: "My Mac", 
+        width: 1920, 
+        height: 1080, 
+        side: activeSide 
+      });
+      status = "Connected";
+    } catch (e) {
+      console.error(e);
+      status = "Stopped";
+    }
+  }
+
+  async function stopService() {
+    await invoke('stop_coordinator');
+    status = "Stopped";
+  }
 </script>
 
-<section id="center">
-  <div class="hero">
-    <img src={heroImg} class="base" width="170" height="179" alt="" />
-    <img src={svelteLogo} class="framework" alt="Svelte logo" />
-    <img src={viteLogo} class="vite" alt="Vite logo" />
+<main class="app-container">
+  <div class="top-bar">
+    <ConnectionStatus {status} />
+    
+    <div class="actions">
+      {#if status === "Stopped"}
+        <button class="btn primary" on:click={startServer}>Start Server</button>
+      {:else}
+        <button class="btn secondary" on:click={stopService}>Stop</button>
+      {/if}
+    </div>
   </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/App.svelte</code> and save to test <code>HMR</code></p>
-  </div>
-  <Counter />
-</section>
 
-<div class="ticks"></div>
+  <ArrangeDisplays on:layoutChanged={handleLayoutChanged} />
+</main>
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true">
-      <use href="/icons.svg#documentation-icon"></use>
-    </svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank" rel="noreferrer">
-          <img class="logo" src={viteLogo} alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://svelte.dev/" target="_blank" rel="noreferrer">
-          <img class="button-icon" src={svelteLogo} alt="" />
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true">
-      <use href="/icons.svg#social-icon"></use>
-    </svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li>
-        <a href="https://github.com/vitejs/vite" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#github-icon"></use>
-          </svg>
-          GitHub
-        </a>
-      </li>
-      <li>
-        <a href="https://chat.vite.dev/" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#discord-icon"></use>
-          </svg>
-          Discord
-        </a>
-      </li>
-      <li>
-        <a href="https://x.com/vite_js" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#x-icon"></use>
-          </svg>
-          X.com
-        </a>
-      </li>
-      <li>
-        <a href="https://bsky.app/profile/vite.dev" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#bluesky-icon"></use>
-          </svg>
-          Bluesky
-        </a>
-      </li>
-    </ul>
-  </div>
-</section>
+<style>
+  .app-container {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--mac-bg);
+  }
 
-<div class="ticks"></div>
-<section id="spacer"></section>
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 40px 12px 40px;
+  }
+
+  .actions {
+    display: flex;
+    gap: 12px;
+  }
+
+  .btn {
+    padding: 4px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  .btn.primary {
+    background: #007aff;
+    color: white;
+    border: 1px solid #0062cc;
+  }
+
+  .btn.primary:hover {
+    background: #0062cc;
+  }
+
+  .btn.secondary {
+    background: #ffffff;
+    color: #333;
+    border: 1px solid #d1d1d1;
+  }
+
+  .btn.secondary:hover {
+    background: #f0f0f0;
+  }
+</style>

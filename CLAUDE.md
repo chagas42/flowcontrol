@@ -101,31 +101,33 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 > This section is rewritten at the end of every session so any machine can pick up from the exact same state.
 
-**Date:** 2026-04-12
-**Commit:** `1a24a7a` — feat(input): implement MacOSCapture and MacOSInjector via CGEventTap
+**Date:** 2026-04-11
+**Commit:** pending — `coordinator.rs` written, `cargo check` passes (89 "never used" warnings, zero errors)
 
 ### What was done this session
 
-**Contract fixes (before input::macos):**
-- `inject_move` now takes `Point` (pixel coords) instead of `(x_norm, y_norm)` — coordinator owns coordinate conversion via `ScreenLayout`, single source of truth
-- Added `Message::Ack` to protocol — `TransitionInReceived` now emits `Send(Ack)` so the other machine can fire `TransitionAcknowledged → Remote + StartForwarding`
-- Confirmed all module contracts are clean: `engine` has zero OS/network deps; `input` and `network` depend only on engine data types
+**`coordinator.rs` — `src/coordinator.rs` (new file):**
+- `Coordinator` struct owns `StateMachineImpl`, `ScreenLayoutImpl`, `EdgeDetectionImpl`, `NetworkLayerImpl`, `MacOSCapture`, `MacOSInjector` (platform-gated)
+- Two constructors: `new_server(local_dims, side)` → `StateMachineImpl::new()` (Local start); `new_client(local_dims, side)` → `StateMachineImpl::new_as_client()` (Remote start)
+- `run_as_server(name)` / `run_as_client()` — start network, start capture, enter `event_loop()`
+- `event_loop()` — `tokio::select!` on `input_rx` and `network_rx`
+- `on_input`: Local/Transitioning → edge detection → state machine; Remote → forward over network
+- `on_network`: Connected → `ConnectionEstablished` + send `ScreenInfo`; Disconnected → `ConnectionLost`; MessageReceived → `on_message()`
+- `on_message`: `MouseMove/Button/Scroll` → inject; `TransitionIn/Ack` → state machine; `ScreenInfo` → configure `ScreenLayout` + `EdgeDetection`
+- `execute_commands`: `StartForwarding` → `suppressing=true` + hide cursor; `StopForwarding` → `suppressing=false`; `AcceptCursor` → show cursor + inject at entry point; `Send` → `network.send()`
+- `lib.rs` updated with `mod coordinator;`
 
-**`input::macos` — `src/input/macos.rs`:**
-- `MacOSCapture` — CGEventTap via raw FFI, `extern "C"` callback, `std::thread::spawn` for `CFRunLoopRun`
-- `MacOSInjector` — `CGWarpMouseCursorPosition` + `CGEventPost` for move, button, scroll; `CGDisplayHideCursor/ShowCursor` + `CGAssociateMouseAndMouseCursorPosition` for cursor visibility
-- `suppressing: Arc<AtomicBool>` — coordinator sets this on `StartForwarding`; callback returns `null` to suppress local events while cursor is on remote machine
-- `permission_status()` → `AXIsProcessTrusted()`; `request_permission()` → `AXIsProcessTrustedWithOptions` with `kAXTrustedCheckOptionPrompt = true`
-- Raw pointer → thread boundary: cast to `usize` before `spawn`, cast back inside thread
-- `cargo check` passes — 87 "never used" warnings only (expected)
+### Next tasks (in order)
 
-### Next task
+1. **`input::windows`** — `SetWindowsHookEx` capture + `SendInput` injection (enter plan mode first)
+   - `WindowsCapture` + `WindowsInjector`, all `#[cfg(target_os = "windows")]`
+   - No permission needed — `permission_status()` always `Granted`
+   - `stop()` → `UnhookWindowsHookEx` + `PostThreadMessage(WM_QUIT)`
 
-Implement `input::windows` — SetWindowsHookEx capture + SendInput injection. Enter plan mode first.
+2. **`commands.rs`** — Tauri IPC bridge
+   - Expose `start_server`, `start_client`, `connect_to_peer`, `get_peers`, `stop` as `#[tauri::command]`
+   - Store `Arc<Mutex<Option<Coordinator>>>` in Tauri state; run coordinator in `tokio::spawn`
 
-Scope:
-- `WindowsCapture` struct implementing `InputCapture` — `SetWindowsHookEx(WH_MOUSE_LL, ...)`, message loop on dedicated thread
-- `WindowsInjector` struct implementing `InputInjector` — `SendInput` for move, button, scroll; `ShowCursor(FALSE/TRUE)` for visibility
-- No permission check needed on Windows — `permission_status()` always returns `Granted`
-- `stop()` → `UnhookWindowsHookEx` + `PostThreadMessage(WM_QUIT)` to exit message loop
-- All code gated with `#[cfg(target_os = "windows")]`
+3. **Frontend** — `App.svelte`, `ArrangeDisplays.svelte`, `ConnectionStatus.svelte`, permissions UI
+
+4. **CI/CD** — GitHub Actions, `.dmg` + `.msi` installers
