@@ -102,35 +102,30 @@ cargo check --manifest-path src-tauri/Cargo.toml
 > This section is rewritten at the end of every session so any machine can pick up from the exact same state.
 
 **Date:** 2026-04-12
-**Commit:** `71d57bd` — feat(network): implement NetworkLayerImpl with TCP and mDNS discovery
+**Commit:** `1a24a7a` — feat(input): implement MacOSCapture and MacOSInjector via CGEventTap
 
-### What was done
+### What was done this session
 
-- Implemented `NetworkLayerImpl` in `src/network/mod.rs`
-  - TCP server: binds `0.0.0.0:7878`, advertises `_flowcontrol._tcp.local.` via mDNS, accepts one connection
-  - TCP client: browses `_flowcontrol._tcp.local.` via mDNS, populates peers list
-  - `connect(peer)`: TCP dial to resolved peer address, spawns reader/writer tasks
-  - `send(msg)`: enqueues `Message` to writer task channel (capacity 64)
-  - Wire format: 4-byte big-endian length prefix + `bincode` payload per frame
-  - Shutdown: `broadcast::channel` signals all spawned tasks to exit cleanly
-  - `NetworkEvent` enum for coordinator: `MessageReceived`, `StateChanged`, `PeersUpdated`
-- Added `mdns-sd = "0.11"` to `Cargo.toml`
-- `cargo check` passes — 33 "never used" warnings only (expected, coordinator not wired yet)
+**Contract fixes (before input::macos):**
+- `inject_move` now takes `Point` (pixel coords) instead of `(x_norm, y_norm)` — coordinator owns coordinate conversion via `ScreenLayout`, single source of truth
+- Added `Message::Ack` to protocol — `TransitionInReceived` now emits `Send(Ack)` so the other machine can fire `TransitionAcknowledged → Remote + StartForwarding`
+- Confirmed all module contracts are clean: `engine` has zero OS/network deps; `input` and `network` depend only on engine data types
 
-### Architecture note: coordinator channel
-
-`NetworkLayerImpl::new(event_tx: mpsc::Sender<NetworkEvent>)` — the coordinator creates the channel and passes the sender. It receives on the receiver side.
+**`input::macos` — `src/input/macos.rs`:**
+- `MacOSCapture` — CGEventTap via raw FFI, `extern "C"` callback, `std::thread::spawn` for `CFRunLoopRun`
+- `MacOSInjector` — `CGWarpMouseCursorPosition` + `CGEventPost` for move, button, scroll; `CGDisplayHideCursor/ShowCursor` + `CGAssociateMouseAndMouseCursorPosition` for cursor visibility
+- `suppressing: Arc<AtomicBool>` — coordinator sets this on `StartForwarding`; callback returns `null` to suppress local events while cursor is on remote machine
+- `permission_status()` → `AXIsProcessTrusted()`; `request_permission()` → `AXIsProcessTrustedWithOptions` with `kAXTrustedCheckOptionPrompt = true`
+- Raw pointer → thread boundary: cast to `usize` before `spawn`, cast back inside thread
+- `cargo check` passes — 87 "never used" warnings only (expected)
 
 ### Next task
 
-Implement `input::macos` — CGEventTap capture + CGEventPost injection. Enter plan mode first.
+Implement `input::windows` — SetWindowsHookEx capture + SendInput injection. Enter plan mode first.
 
 Scope:
-- `MacOSCapture` struct implementing `InputCapture`
-- `MacOSInjector` struct implementing `InputInjector`
-- `permission_status()` → `AXIsProcessTrusted()`
-- `request_permission()` → `AXIsProcessTrustedWithOptions` with prompt option
-- `start()` → create `CGEventTap`, attach `CFRunLoopSource`, spawn thread to drive `CFRunLoop`
-- On each event: convert `CGPoint` → `Point`, `try_send` to bounded channel (capacity 64, drop on full)
-- `stop()` → disable tap, stop run loop
-- All code gated with `#[cfg(target_os = "macos")]`
+- `WindowsCapture` struct implementing `InputCapture` — `SetWindowsHookEx(WH_MOUSE_LL, ...)`, message loop on dedicated thread
+- `WindowsInjector` struct implementing `InputInjector` — `SendInput` for move, button, scroll; `ShowCursor(FALSE/TRUE)` for visibility
+- No permission check needed on Windows — `permission_status()` always returns `Granted`
+- `stop()` → `UnhookWindowsHookEx` + `PostThreadMessage(WM_QUIT)` to exit message loop
+- All code gated with `#[cfg(target_os = "windows")]`
