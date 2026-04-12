@@ -3,8 +3,8 @@
   const dispatch = createEventDispatcher();
 
   // Displays state (canvas center is ~300x160)
-  let primaryRect = { x: 220, y: 110, w: 160, h: 100, active: true };
-  let secRect = { x: 380, y: 110, w: 160, h: 100, active: false };
+  let primaryRect = { x: 220, y: 70, w: 160, h: 100, active: true };
+  let secRect = { x: 380, y: 70, w: 160, h: 100, active: false };
   
   let isDragging = false;
   let dragOffsetX = 0;
@@ -96,7 +96,7 @@
   .canvas-container {
     position: relative;
     width: 100%;
-    height: 320px;
+    height: 240px;
     background: #fdfdfd;
     border: 1px solid #d4d4d4;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.04);

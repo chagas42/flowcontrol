@@ -211,11 +211,17 @@ impl Coordinator {
     async fn on_network(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::StateChanged(ConnectionState::Connected) => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("status-changed", "Connected");
+                }
                 let cmds = self.state_machine.handle(Event::ConnectionEstablished);
                 self.execute_commands(cmds).await;
                 let _ = self.network.send(Message::ScreenInfo(self.local_dims)).await;
             }
             NetworkEvent::StateChanged(ConnectionState::Disconnected) => {
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("status-changed", "Stopped");
+                }
                 let cmds = self.state_machine.handle(Event::ConnectionLost);
                 self.execute_commands(cmds).await;
             }

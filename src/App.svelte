@@ -15,6 +15,9 @@
     listen('peers-updated', (event) => {
       peers = event.payload as any;
     });
+    listen('status-changed', (event) => {
+      status = event.payload as any;
+    });
   });
 
   async function handleLayoutChanged(event: CustomEvent<{ side: string }>) {
@@ -39,7 +42,6 @@
         height: 1080, 
         side: activeSide 
       });
-      status = "Connected"; // Visual simulation fallback
     } catch (e) {
       console.error(e);
       status = "Stopped";
@@ -63,7 +65,6 @@
   async function connectToPeer(id: string) {
     try {
       await invoke('connect_to_peer', { peerId: id });
-      status = "Connected";
     } catch(e) {
       console.error(e);
     }
@@ -127,6 +128,7 @@
     display: flex;
     flex-direction: column;
     background: var(--mac-bg);
+    overflow-y: auto;
   }
 
   .top-bar {
