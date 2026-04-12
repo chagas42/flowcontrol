@@ -83,28 +83,25 @@
   }
 
   async function requestPermission() {
-    const granted: boolean = await invoke('request_accessibility_permission');
-    if (granted) {
-      permissionRequired = false;
-      permissionGranted = true;
-    } else {
-      // System Settings opened — poll every second until granted
-      const interval = setInterval(async () => {
-        const ok: boolean = await invoke('request_accessibility_permission');
-        if (ok) {
-          clearInterval(interval);
-          permissionRequired = false;
-          permissionGranted = true;
-          // Re-start coordinator so capture gets retried
-          if (status !== 'Stopped') {
-            const prevMode = mode;
-            await stopService();
-            if (prevMode === 'Server') await startServer();
-            else await startClient();
-          }
+    // Open System Settings once — no dialog loop
+    await invoke('request_accessibility_permission');
+
+    // Poll silently (no prompt) until user toggles on
+    const interval = setInterval(async () => {
+      const ok: boolean = await invoke('check_accessibility_permission');
+      if (ok) {
+        clearInterval(interval);
+        permissionRequired = false;
+        permissionGranted = true;
+        // Re-start coordinator so capture gets retried with permission
+        if (status !== 'Stopped') {
+          const prevMode = mode;
+          await stopService();
+          if (prevMode === 'Server') await startServer();
+          else await startClient();
         }
-      }, 1000);
-    }
+      }
+    }, 1500);
   }
 
   function toggleMode(newMode: "Server" | "Client") {

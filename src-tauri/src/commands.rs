@@ -102,22 +102,27 @@ pub async fn stop_coordinator(state: State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
-/// Opens System Settings → Accessibility for this app. Returns whether
-/// permission is already granted (true = no need to restart).
+/// Checks Accessibility status silently — no dialog, no prompt.
+/// Returns true if already granted.
 #[tauri::command]
-pub async fn request_accessibility_permission() -> bool {
+pub async fn check_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        let capture = MacOSCapture::new();
-        if capture.permission_status() == PermissionStatus::Granted {
-            return true;
-        }
-        capture.request_permission();
-        // Check immediately in case it was just toggled on
-        return capture.permission_status() == PermissionStatus::Granted;
+        return MacOSCapture::new().permission_status() == PermissionStatus::Granted;
     }
     #[cfg(not(target_os = "macos"))]
     true
+}
+
+/// Opens System Settings → Accessibility (one-shot prompt).
+/// Call this ONCE when the user clicks the button — then poll
+/// check_accessibility_permission to detect when they toggle it on.
+#[tauri::command]
+pub async fn request_accessibility_permission() {
+    #[cfg(target_os = "macos")]
+    {
+        MacOSCapture::new().request_permission();
+    }
 }
 
 #[tauri::command]
