@@ -6,7 +6,8 @@ pub enum InputEvent {
     MouseMove(Point),
     /// Raw hardware delta — sent when suppressing=true (Remote state).
     /// CGEventGetLocation is frozen in suppressing mode; deltas are always valid.
-    MouseDelta { dx: f64, dy: f64 },
+    /// `button`: None = pure move, Some(0) = left drag, Some(1) = right drag.
+    MouseDelta { dx: f64, dy: f64, button: Option<u8> },
     MouseButton { button: u8, pressed: bool },
     Scroll { dx: f32, dy: f32 },
 }
@@ -26,7 +27,9 @@ pub trait InputCapture: Send {
 }
 
 pub trait InputInjector: Send {
-    fn inject_move(&self, pos: Point);
+    /// Inject a cursor move. `button` carries drag state: None = move,
+    /// Some(0) = left drag, Some(1) = right drag.
+    fn inject_move(&self, pos: Point, button: Option<u8>);
     fn inject_button(&self, button: u8, pressed: bool);
     fn inject_scroll(&self, dx: f32, dy: f32);
     fn hide_cursor(&self);
