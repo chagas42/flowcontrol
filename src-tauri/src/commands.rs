@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use serde::Deserialize;
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[cfg(target_os = "macos")]
 use crate::input::{InputCapture, PermissionStatus};
@@ -83,7 +83,7 @@ pub async fn start_client(
     *state.connect_tx.lock().await = None;
 
     let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
+    let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into(), Some(app_handle.clone()), rx);
 
     let handle = tokio::spawn(async move {
         let _ = coordinator.run_as_client().await;
@@ -91,6 +91,16 @@ pub async fn start_client(
 
     *lock = Some(handle);
     *state.connect_tx.lock().await = Some(tx);
+
+    // Injection via CGEventPost requires Accessibility on the client too.
+    // (No event tap needed, but posting to other apps is still gated by TCC.)
+    #[cfg(target_os = "macos")]
+    {
+        if MacOSCapture::new().permission_status() != PermissionStatus::Granted {
+            let _ = app_handle.emit("permission-required", ());
+        }
+    }
+
     Ok(())
 }
 
