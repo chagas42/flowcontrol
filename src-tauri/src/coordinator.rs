@@ -130,11 +130,11 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Start as the client: browse mDNS, capture input, run event loop.
+    /// Start as the client: browse mDNS, run event loop.
+    /// The client only injects events received from the server — no local capture needed.
     /// Call `network.connect(peer)` separately after peers are discovered.
     pub async fn run_as_client(&mut self) -> Result<(), NetworkError> {
         self.network.start_client().await?;
-        self.start_capture();
         self.event_loop().await;
         Ok(())
     }
