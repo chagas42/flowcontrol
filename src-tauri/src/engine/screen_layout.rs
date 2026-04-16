@@ -34,6 +34,28 @@ pub struct NormalizedPoint {
     pub y: f32,
 }
 
+/// Maps the side where the neighbor sits to the local screen edge that triggers a transition.
+/// Right neighbor → watch the Right edge, etc.
+pub fn neighbor_side_to_edge(side: NeighborSide) -> Edge {
+    match side {
+        NeighborSide::Left => Edge::Left,
+        NeighborSide::Right => Edge::Right,
+        NeighborSide::Top => Edge::Top,
+        NeighborSide::Bottom => Edge::Bottom,
+    }
+}
+
+/// Returns the edge opposite to the one watched — used to detect when the cursor
+/// returns to the local screen while in Remote state.
+pub fn opposite_edge(side: NeighborSide) -> Edge {
+    match side {
+        NeighborSide::Left => Edge::Right,
+        NeighborSide::Right => Edge::Left,
+        NeighborSide::Top => Edge::Bottom,
+        NeighborSide::Bottom => Edge::Top,
+    }
+}
+
 pub trait ScreenLayout: Send + Sync {
     fn configure(
         &mut self,
@@ -84,11 +106,42 @@ impl ScreenLayout for ScreenLayoutImpl {
     }
 
     fn watched_edge(&self) -> Option<Edge> {
-        self.side.map(|s| match s {
-            NeighborSide::Left => Edge::Left,
-            NeighborSide::Right => Edge::Right,
-            NeighborSide::Top => Edge::Top,
-            NeighborSide::Bottom => Edge::Bottom,
-        })
+        self.side.map(neighbor_side_to_edge)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_neighbor_side_to_edge_all_variants() {
+        assert_eq!(neighbor_side_to_edge(NeighborSide::Left), Edge::Left);
+        assert_eq!(neighbor_side_to_edge(NeighborSide::Right), Edge::Right);
+        assert_eq!(neighbor_side_to_edge(NeighborSide::Top), Edge::Top);
+        assert_eq!(neighbor_side_to_edge(NeighborSide::Bottom), Edge::Bottom);
+    }
+
+    #[test]
+    fn test_opposite_edge_all_variants() {
+        assert_eq!(opposite_edge(NeighborSide::Left), Edge::Right);
+        assert_eq!(opposite_edge(NeighborSide::Right), Edge::Left);
+        assert_eq!(opposite_edge(NeighborSide::Top), Edge::Bottom);
+        assert_eq!(opposite_edge(NeighborSide::Bottom), Edge::Top);
+    }
+
+    #[test]
+    fn test_map_roundtrip() {
+        let mut layout = ScreenLayoutImpl::new();
+        layout.configure(
+            NeighborSide::Right,
+            ScreenDimensions { width: 1920, height: 1080 },
+            ScreenDimensions { width: 2560, height: 1440 },
+        );
+        let norm = NormalizedPoint { x: 0.25, y: 0.75 };
+        let local = layout.map_to_local(norm);
+        let back = layout.map_to_remote(local);
+        assert!((back.x - norm.x).abs() < 1e-5);
+        assert!((back.y - norm.y).abs() < 1e-5);
     }
 }
