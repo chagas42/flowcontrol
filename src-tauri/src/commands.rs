@@ -49,9 +49,10 @@ pub async fn start_server(
 ) -> Result<(), String> {
     let mut lock = state.handle.lock().await;
 
-    if lock.is_some() {
-        return Err("A coordinator is already running".into());
+    if let Some(old) = lock.take() {
+        old.abort();
     }
+    *state.connect_tx.lock().await = None;
 
     let (tx, rx) = tokio::sync::mpsc::channel(32);
     let mut coordinator = Coordinator::new_server(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
@@ -76,9 +77,10 @@ pub async fn start_client(
 ) -> Result<(), String> {
     let mut lock = state.handle.lock().await;
 
-    if lock.is_some() {
-        return Err("A coordinator is already running".into());
+    if let Some(old) = lock.take() {
+        old.abort();
     }
+    *state.connect_tx.lock().await = None;
 
     let (tx, rx) = tokio::sync::mpsc::channel(32);
     let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
