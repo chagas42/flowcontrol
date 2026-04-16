@@ -376,9 +376,11 @@ impl InputInjector for MacOSInjector {
     fn inject_move(&self, pos: Point) {
         let cg_pos = CGPoint { x: pos.x, y: pos.y };
         *self.last_pos.lock().unwrap() = cg_pos;
+        // CGEventPost with kCGEventMouseMoved moves the cursor AND delivers the event
+        // in one step. CGWarpMouseCursorPosition is intentionally omitted — it has a
+        // ~250ms internal update delay and causes a double-update that makes the cursor
+        // teleport between positions.
         unsafe {
-            CGWarpMouseCursorPosition(cg_pos);
-            // Post MouseMoved so apps update hover state.
             let event = CGEventCreateMouseEvent(
                 std::ptr::null_mut(),
                 K_CG_EVENT_MOUSE_MOVED,
@@ -386,7 +388,7 @@ impl InputInjector for MacOSInjector {
                 0,
             );
             if !event.is_null() {
-                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
+                CGEventPost(K_CG_HID_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
@@ -404,7 +406,7 @@ impl InputInjector for MacOSInjector {
             let event =
                 CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, pos, cg_button);
             if !event.is_null() {
-                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
+                CGEventPost(K_CG_HID_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
@@ -420,7 +422,7 @@ impl InputInjector for MacOSInjector {
                 dx as i32,
             );
             if !event.is_null() {
-                CGEventPost(K_CG_ANNOTATED_SESSION_EVENT_TAP, event);
+                CGEventPost(K_CG_HID_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
