@@ -71,6 +71,11 @@ impl StateMachine for StateMachineImpl {
                     Command::Send(Message::Ack),
                 ]
             }
+            (State::Local, Event::TransitionInReceived { .. }) => {
+                // Client had the cursor (Local) and server is recalling it.
+                self.state = State::Remote;
+                vec![Command::StartForwarding, Command::Send(Message::Ack)]
+            }
             (State::Remote, Event::CursorReturnedToLocal { y_norm }) => {
                 self.state = State::ReturnTransitioning;
                 vec![
@@ -168,6 +173,56 @@ mod tests {
             let mut sm = StateMachineImpl { state: start };
             sm.handle(Event::ConnectionLost);
             assert_eq!(sm.state(), State::Local, "ConnectionLost from {start:?} should → Local");
+        }
+    }
+
+    #[test]
+    fn test_client_return_transition() {
+        // Client had cursor (Local), server recalls it via TransitionIn.
+        let mut sm = StateMachineImpl::new();
+        sm.state = State::Local;
+        let cmds = sm.handle(Event::TransitionInReceived { y_norm: 0.5 });
+        assert_eq!(sm.state(), State::Remote);
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(cmds[0], Command::StartForwarding));
+        assert!(matches!(cmds[1], Command::Send(_)));
+    }
+
+    #[test]
+    fn test_full_round_trip_twice() {
+        // Simulates two server + client state machines going through 2 full cycles.
+        let mut server = StateMachineImpl::new();          // starts Local
+        let mut client = StateMachineImpl::new_as_client(); // starts Remote
+
+        for _ in 0..2 {
+            // Forward: server detects edge
+            let cmds = server.handle(Event::EdgeCrossed(make_crossed(0.5)));
+            assert_eq!(server.state(), State::Transitioning);
+            assert!(matches!(cmds[0], Command::Send(Message::TransitionIn { .. })));
+
+            // Client receives TransitionIn (Remote → Local)
+            let cmds = client.handle(Event::TransitionInReceived { y_norm: 0.5 });
+            assert_eq!(client.state(), State::Local);
+            assert!(matches!(cmds[2], Command::Send(Message::Ack)));
+
+            // Server receives Ack (Transitioning → Remote)
+            let cmds = server.handle(Event::TransitionAcknowledged);
+            assert_eq!(server.state(), State::Remote);
+            assert!(matches!(cmds[0], Command::StartForwarding));
+
+            // Return: server detects cursor back
+            let cmds = server.handle(Event::CursorReturnedToLocal { y_norm: 0.5 });
+            assert_eq!(server.state(), State::ReturnTransitioning);
+            assert!(matches!(cmds[0], Command::Send(Message::TransitionIn { .. })));
+
+            // Client receives TransitionIn (Local → Remote)
+            let cmds = client.handle(Event::TransitionInReceived { y_norm: 0.5 });
+            assert_eq!(client.state(), State::Remote);
+            assert!(matches!(cmds[1], Command::Send(Message::Ack)));
+
+            // Server receives Ack (ReturnTransitioning → Local)
+            server.handle(Event::TransitionAcknowledged);
+            assert_eq!(server.state(), State::Local);
         }
     }
 
