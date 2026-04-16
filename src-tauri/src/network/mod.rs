@@ -204,6 +204,7 @@ impl NetworkLayer for NetworkLayerImpl {
                     _ = accept_shutdown.recv() => break,
                     result = listener.accept() => {
                         let Ok((stream, _)) = result else { break };
+                        stream.set_nodelay(true).ok();
                         *state.lock().unwrap() = ConnectionState::Connected;
                         let _ = event_tx
                             .send(NetworkEvent::StateChanged(ConnectionState::Connected))
@@ -364,6 +365,7 @@ impl NetworkLayerImpl {
         let stream = TcpStream::connect(addr)
             .await
             .map_err(|e| NetworkError::ConnectionFailed(e.to_string()))?;
+        stream.set_nodelay(true).ok();
 
         let shutdown_tx = self
             .shutdown_tx
