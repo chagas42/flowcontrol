@@ -144,16 +144,19 @@ impl NetworkLayerImpl {
 
         // Writer task: Message → length-prefixed bincode frame → socket
         tokio::spawn(async move {
+            let mut buf = Vec::with_capacity(512);
             loop {
                 tokio::select! {
                     biased;
                     _ = wr_shutdown.recv() => break,
                     msg = msg_rx.recv() => {
                         let Some(msg) = msg else { break };
-                        let Ok(payload) = bincode::serialize(&msg) else { continue };
-                        let len = (payload.len() as u32).to_be_bytes();
-                        if write_half.write_all(&len).await.is_err() { break; }
-                        if write_half.write_all(&payload).await.is_err() { break; }
+                        buf.clear();
+                        buf.extend_from_slice(&[0u8; 4]);
+                        if bincode::serialize_into(&mut buf, &msg).is_err() { continue; }
+                        let len = ((buf.len() - 4) as u32).to_be_bytes();
+                        buf[..4].copy_from_slice(&len);
+                        if write_half.write_all(&buf).await.is_err() { break; }
                     }
                 }
             }
