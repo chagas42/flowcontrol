@@ -73,8 +73,10 @@ impl StateMachine for StateMachineImpl {
             }
             (State::Local, Event::TransitionInReceived { .. }) => {
                 // Client had the cursor (Local) and server is recalling it.
+                // No side effects needed — cursor disappears when the server
+                // warps it back via ReturnCursorToLocal on its side.
                 self.state = State::Remote;
-                vec![Command::StartForwarding, Command::Send(Message::Ack)]
+                vec![Command::Send(Message::Ack)]
             }
             (State::Remote, Event::CursorReturnedToLocal { y_norm }) => {
                 self.state = State::ReturnTransitioning;
@@ -183,9 +185,8 @@ mod tests {
         sm.state = State::Local;
         let cmds = sm.handle(Event::TransitionInReceived { y_norm: 0.5 });
         assert_eq!(sm.state(), State::Remote);
-        assert_eq!(cmds.len(), 2);
-        assert!(matches!(cmds[0], Command::StartForwarding));
-        assert!(matches!(cmds[1], Command::Send(_)));
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Command::Send(Message::Ack)));
     }
 
     #[test]
@@ -218,7 +219,7 @@ mod tests {
             // Client receives TransitionIn (Local → Remote)
             let cmds = client.handle(Event::TransitionInReceived { y_norm: 0.5 });
             assert_eq!(client.state(), State::Remote);
-            assert!(matches!(cmds[1], Command::Send(Message::Ack)));
+            assert!(matches!(cmds[0], Command::Send(Message::Ack)));
 
             // Server receives Ack (ReturnTransitioning → Local)
             server.handle(Event::TransitionAcknowledged);
