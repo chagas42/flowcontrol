@@ -70,3 +70,46 @@ impl EdgeDetection for EdgeDetectionImpl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::edge_detection::EdgeDetection;
+
+    fn dims(w: u32, h: u32) -> ScreenDimensions {
+        ScreenDimensions { width: w, height: h }
+    }
+
+    #[test]
+    fn test_unconfigured_returns_none() {
+        let mut ed = EdgeDetectionImpl::new();
+        assert!(ed.update(Point { x: 1919.0, y: 0.0 }).is_none());
+    }
+
+    #[test]
+    fn test_fires_on_crossing_right_edge() {
+        let mut ed = EdgeDetectionImpl::new();
+        ed.configure(Edge::Right, dims(1920, 1080), 10.0);
+        assert!(ed.update(Point { x: 1000.0, y: 540.0 }).is_none());
+        let ev = ed.update(Point { x: 1915.0, y: 540.0 }).expect("should fire");
+        assert_eq!(ev.edge, Edge::Right);
+        assert!((ev.y_norm - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_resets_after_leaving_edge() {
+        let mut ed = EdgeDetectionImpl::new();
+        ed.configure(Edge::Right, dims(1920, 1080), 10.0);
+        ed.update(Point { x: 1915.0, y: 0.0 }); // fire
+        ed.update(Point { x: 100.0, y: 0.0 });  // leave → reset
+        assert!(ed.update(Point { x: 1919.0, y: 0.0 }).is_some(), "should fire again after reset");
+    }
+
+    #[test]
+    fn test_no_double_fire() {
+        let mut ed = EdgeDetectionImpl::new();
+        ed.configure(Edge::Right, dims(1920, 1080), 10.0);
+        ed.update(Point { x: 1915.0, y: 0.0 }); // first fire
+        assert!(ed.update(Point { x: 1919.0, y: 0.0 }).is_none(), "should not fire twice");
+    }
+}
