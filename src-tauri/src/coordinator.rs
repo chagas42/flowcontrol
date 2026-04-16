@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use crate::engine::{
     edge_detection::EdgeDetectionImpl,
     protocol::Message,
-    screen_layout::{NeighborSide, NormalizedPoint, ScreenDimensions, ScreenLayoutImpl},
+    screen_layout::{neighbor_side_to_edge, opposite_edge, NeighborSide, NormalizedPoint, ScreenDimensions, ScreenLayoutImpl},
     state_machine::{Command, Event, State, StateMachineImpl},
 };
 use crate::input::{InputCapture, InputEvent, InputInjector};
@@ -56,6 +56,13 @@ pub struct Coordinator {
     /// events are suppressed.
     virtual_pos: crate::engine::screen_layout::Point,
 
+    /// Detects when virtual_pos crosses back to the local screen while in Remote state.
+    return_edge_detection: EdgeDetectionImpl,
+
+    /// y_norm of the edge crossing point, stored between on_input and execute_commands
+    /// so StartForwarding can seed virtual_pos at the actual crossing position.
+    pending_transition_y_norm: Option<f32>,
+
     /// Channel to receive manual connection triggers from frontend
     connect_rx: mpsc::Receiver<String>,
     app_handle: Option<AppHandle>,
@@ -72,10 +79,13 @@ impl Coordinator {
         let (input_tx, input_rx) = mpsc::channel::<InputEvent>(64);
         let (net_tx, network_rx) = mpsc::channel::<NetworkEvent>(32);
 
+        let mut edge_detection = EdgeDetectionImpl::new();
+        edge_detection.configure(neighbor_side_to_edge(side), local_dims, 10.0);
+
         Self {
             state_machine,
             screen_layout: ScreenLayoutImpl::new(),
-            edge_detection: EdgeDetectionImpl::new(),
+            edge_detection,
             network: NetworkLayerImpl::new(net_tx),
 
             #[cfg(target_os = "macos")]
@@ -89,6 +99,8 @@ impl Coordinator {
             local_dims,
             neighbor_side: side,
             virtual_pos: crate::engine::screen_layout::Point { x: 0.0, y: 0.0 },
+            return_edge_detection: EdgeDetectionImpl::new(),
+            pending_transition_y_norm: None,
             connect_rx,
             app_handle,
         }
@@ -194,14 +206,18 @@ impl Coordinator {
 
     async fn on_input(&mut self, event: InputEvent) {
         match self.state_machine.state() {
-            State::Local | State::Transitioning => {
+            State::Local => {
                 if let InputEvent::MouseMove(pt) = event {
                     if let Some(crossed) = self.edge_detection.update(pt) {
+                        self.pending_transition_y_norm = Some(crossed.y_norm);
                         let cmds = self.state_machine.handle(Event::EdgeCrossed(crossed));
                         self.execute_commands(cmds).await;
                     }
                 }
                 // Buttons and scroll stay local — not forwarded.
+            }
+            State::Transitioning | State::ReturnTransitioning => {
+                // Waiting for Ack — pass through, no edge detection, no forwarding.
             }
             State::Remote => {
                 match event {
@@ -212,6 +228,17 @@ impl Coordinator {
                         let h = self.local_dims.height as f64;
                         self.virtual_pos.x = (self.virtual_pos.x + dx).clamp(0.0, w - 1.0);
                         self.virtual_pos.y = (self.virtual_pos.y + dy).clamp(0.0, h - 1.0);
+
+                        // Check if the cursor has crossed back to the local screen.
+                        if let Some(crossed) = self.return_edge_detection.update(self.virtual_pos) {
+                            let cmds = self.state_machine.handle(Event::CursorReturnedToLocal {
+                                y_norm: crossed.y_norm,
+                            });
+                            self.execute_commands(cmds).await;
+                            // Skip sending MouseMove this tick — cursor is returning.
+                            return;
+                        }
+
                         let norm = self.screen_layout.map_to_remote(self.virtual_pos);
                         let _ = self
                             .network
@@ -320,12 +347,25 @@ impl Coordinator {
                 Command::StartForwarding => {
                     #[cfg(target_os = "macos")]
                     {
-                        // Seed virtual_pos at screen center so delta accumulation
-                        // starts from a neutral position.
-                        self.virtual_pos = crate::engine::screen_layout::Point {
-                            x: self.local_dims.width as f64 / 2.0,
-                            y: self.local_dims.height as f64 / 2.0,
+                        // Seed virtual_pos at the actual edge-crossing pixel so the first
+                        // MouseMove sent to the client matches the cursor's true position.
+                        let y_norm = self.pending_transition_y_norm.take().unwrap_or(0.5);
+                        let edge_x = match self.neighbor_side {
+                            NeighborSide::Right => self.local_dims.width as f64 - 1.0,
+                            NeighborSide::Left => 0.0,
+                            NeighborSide::Top => self.local_dims.width as f64 / 2.0,
+                            NeighborSide::Bottom => self.local_dims.width as f64 / 2.0,
                         };
+                        self.virtual_pos = crate::engine::screen_layout::Point {
+                            x: edge_x,
+                            y: y_norm as f64 * self.local_dims.height as f64,
+                        };
+                        // Configure return edge detection for when the cursor comes back.
+                        self.return_edge_detection.configure(
+                            opposite_edge(self.neighbor_side),
+                            self.local_dims,
+                            10.0,
+                        );
                         self.capture.suppressing.store(true, Ordering::SeqCst);
                         self.injector.hide_cursor();
                     }
@@ -345,6 +385,27 @@ impl Coordinator {
                             Some(Edge::Right) => 1.0,
                             Some(Edge::Left) => 0.0,
                             _ => 0.5, // top/bottom: center horizontally
+                        };
+                        let pt = self.screen_layout.map_to_local(NormalizedPoint {
+                            x: entry_x_norm,
+                            y: y_norm,
+                        });
+                        self.injector.show_cursor();
+                        self.injector.inject_move(pt);
+                    }
+                }
+                Command::ReturnCursorToLocal { y_norm } => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Stop suppression — hardware events flow through again.
+                        self.capture.suppressing.store(false, Ordering::SeqCst);
+                        // Cursor re-enters at the local screen edge opposite to the neighbor.
+                        // e.g. Right neighbor → cursor returns at the Right edge (x_norm = 1.0).
+                        let entry_x_norm: f32 = match self.neighbor_side {
+                            NeighborSide::Right => 1.0,
+                            NeighborSide::Left => 0.0,
+                            NeighborSide::Top => 0.5,
+                            NeighborSide::Bottom => 0.5,
                         };
                         let pt = self.screen_layout.map_to_local(NormalizedPoint {
                             x: entry_x_norm,
