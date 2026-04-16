@@ -76,7 +76,7 @@ impl Coordinator {
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
     ) -> Self {
-        let (input_tx, input_rx) = mpsc::channel::<InputEvent>(64);
+        let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
         let (net_tx, network_rx) = mpsc::channel::<NetworkEvent>(32);
 
         let mut edge_detection = EdgeDetectionImpl::new();
@@ -221,7 +221,7 @@ impl Coordinator {
             }
             State::Remote => {
                 match event {
-                    InputEvent::MouseDelta { dx, dy } => {
+                    InputEvent::MouseDelta { dx, dy, button } => {
                         // While suppressing, CGEventGetLocation is frozen at the edge.
                         // Accumulate hardware deltas into virtual_pos instead.
                         let w = self.local_dims.width as f64;
@@ -242,7 +242,7 @@ impl Coordinator {
                         let norm = self.screen_layout.map_to_remote(self.virtual_pos);
                         let _ = self
                             .network
-                            .send(Message::MouseMove { x_norm: norm.x, y_norm: norm.y })
+                            .send(Message::MouseMove { x_norm: norm.x, y_norm: norm.y, button })
                             .await;
                     }
                     InputEvent::MouseMove(_) => {
@@ -298,13 +298,13 @@ impl Coordinator {
 
     async fn on_message(&mut self, msg: Message) {
         match msg {
-            Message::MouseMove { x_norm, y_norm } => {
+            Message::MouseMove { x_norm, y_norm, button } => {
                 #[cfg(target_os = "macos")]
                 {
                     let pt = self
                         .screen_layout
                         .map_to_local(NormalizedPoint { x: x_norm, y: y_norm });
-                    self.injector.inject_move(pt);
+                    self.injector.inject_move(pt, button);
                 }
             }
             Message::MouseButton { button, pressed } => {
@@ -374,6 +374,7 @@ impl Coordinator {
                     #[cfg(target_os = "macos")]
                     {
                         self.capture.suppressing.store(false, Ordering::SeqCst);
+                        self.capture.grace_frames.store(3, Ordering::SeqCst);
                         // Cursor visibility is restored by AcceptCursor (same Vec) or by
                         // the remote machine's AcceptCursor on its next transition.
                     }
@@ -391,7 +392,7 @@ impl Coordinator {
                             y: y_norm,
                         });
                         self.injector.show_cursor();
-                        self.injector.inject_move(pt);
+                        self.injector.inject_move(pt, None);
                     }
                 }
                 Command::ReturnCursorToLocal { y_norm } => {
@@ -399,6 +400,7 @@ impl Coordinator {
                     {
                         // Stop suppression — hardware events flow through again.
                         self.capture.suppressing.store(false, Ordering::SeqCst);
+                        self.capture.grace_frames.store(3, Ordering::SeqCst);
                         // Cursor re-enters at the local screen edge opposite to the neighbor.
                         // e.g. Right neighbor → cursor returns at the Right edge (x_norm = 1.0).
                         let entry_x_norm: f32 = match self.neighbor_side {
@@ -412,7 +414,7 @@ impl Coordinator {
                             y: y_norm,
                         });
                         self.injector.show_cursor();
-                        self.injector.inject_move(pt);
+                        self.injector.inject_move(pt, None);
                     }
                 }
                 Command::Send(msg) => {

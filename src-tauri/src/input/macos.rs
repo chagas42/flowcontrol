@@ -2,7 +2,7 @@
 // Requires Accessibility permission — check with AXIsProcessTrusted() before starting.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -147,6 +147,7 @@ struct TapContext {
     /// True while the coordinator is forwarding events to the remote machine.
     /// When set, the callback suppresses events so the local cursor stays still.
     suppressing: Arc<AtomicBool>,
+    grace_frames: Arc<AtomicU8>,
 }
 
 /// CGEventTap callback. Must be a free `extern "C" fn` — closures cannot be
@@ -162,6 +163,14 @@ unsafe extern "C" fn tap_callback(
 ) -> CGEventRef {
     let ctx = &*(user_info as *const TapContext);
 
+    // Grace period: suppress first N events after returning from Remote state.
+    // Prevents cursor flash caused by stale absolute events firing before
+    // the injected entry-point position takes effect.
+    if ctx.grace_frames.load(Ordering::Relaxed) > 0 {
+        ctx.grace_frames.fetch_sub(1, Ordering::Relaxed);
+        return std::ptr::null_mut();
+    }
+
     match event_type {
         K_CG_EVENT_MOUSE_MOVED
         | K_CG_EVENT_LEFT_MOUSE_DRAGGED
@@ -172,7 +181,13 @@ unsafe extern "C" fn tap_callback(
                 // hardware deltas which are always valid.
                 let dx = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_X) as f64;
                 let dy = CGEventGetIntegerValueField(event, K_CG_MOUSE_EVENT_DELTA_Y) as f64;
-                let _ = ctx.tx.try_send(InputEvent::MouseDelta { dx, dy });
+                // Preserve drag type so the client can post the correct event.
+                let button = match event_type {
+                    K_CG_EVENT_LEFT_MOUSE_DRAGGED => Some(0u8),
+                    K_CG_EVENT_RIGHT_MOUSE_DRAGGED => Some(1u8),
+                    _ => None,
+                };
+                let _ = ctx.tx.try_send(InputEvent::MouseDelta { dx, dy, button });
             } else {
                 let pt = CGEventGetLocation(event);
                 let _ = ctx.tx.try_send(InputEvent::MouseMove(Point { x: pt.x, y: pt.y }));
@@ -221,6 +236,7 @@ pub struct MacOSCapture {
     /// The coordinator sets this to true on StartForwarding and false on
     /// StopForwarding. Read on every mouse event by the C callback.
     pub suppressing: Arc<AtomicBool>,
+    pub grace_frames: Arc<AtomicU8>,
 }
 
 // SAFETY:
@@ -240,6 +256,7 @@ impl MacOSCapture {
             thread: None,
             ctx_ptr: None,
             suppressing: Arc::new(AtomicBool::new(false)),
+            grace_frames: Arc::new(AtomicU8::new(0)),
         }
     }
 }
@@ -249,6 +266,7 @@ impl InputCapture for MacOSCapture {
         let ctx = Box::new(TapContext {
             tx,
             suppressing: self.suppressing.clone(),
+            grace_frames: self.grace_frames.clone(),
         });
         let ctx_ptr = Box::into_raw(ctx);
 
@@ -373,19 +391,23 @@ impl MacOSInjector {
 }
 
 impl InputInjector for MacOSInjector {
-    fn inject_move(&self, pos: Point) {
+    fn inject_move(&self, pos: Point, button: Option<u8>) {
         let cg_pos = CGPoint { x: pos.x, y: pos.y };
         *self.last_pos.lock().unwrap() = cg_pos;
-        // CGEventPost with kCGEventMouseMoved moves the cursor AND delivers the event
-        // in one step. CGWarpMouseCursorPosition is intentionally omitted — it has a
-        // ~250ms internal update delay and causes a double-update that makes the cursor
-        // teleport between positions.
+        // Choose the correct event type so apps receive proper drag events.
+        // CGWarpMouseCursorPosition is intentionally omitted — it has a ~250ms
+        // internal delay and causes double-updates that make the cursor teleport.
+        let (event_type, cg_button) = match button {
+            Some(0) => (K_CG_EVENT_LEFT_MOUSE_DRAGGED, 0u32),
+            Some(1) => (K_CG_EVENT_RIGHT_MOUSE_DRAGGED, 1u32),
+            _ => (K_CG_EVENT_MOUSE_MOVED, 0u32),
+        };
         unsafe {
             let event = CGEventCreateMouseEvent(
                 std::ptr::null_mut(),
-                K_CG_EVENT_MOUSE_MOVED,
+                event_type,
                 cg_pos,
-                0,
+                cg_button,
             );
             if !event.is_null() {
                 CGEventPost(K_CG_HID_EVENT_TAP, event);
@@ -406,7 +428,8 @@ impl InputInjector for MacOSInjector {
             let event =
                 CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, pos, cg_button);
             if !event.is_null() {
-                CGEventPost(K_CG_HID_EVENT_TAP, event);
+                // Session level ensures click-to-focus and window dispatch work correctly.
+                CGEventPost(K_CG_SESSION_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
             }
         }
