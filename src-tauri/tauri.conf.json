@@ -14,9 +14,11 @@
     "windows": [
       {
         "title": "FlowControl",
-        "width": 680,
-        "height": 480,
-        "resizable": false,
+        "width": 980,
+        "height": 640,
+        "minWidth": 840,
+        "minHeight": 560,
+        "resizable": true,
         "visible": true
       }
     ],
