@@ -107,17 +107,38 @@
   <main class="layout">
     <Sidebar bind:active={nav} {status}/>
 
-    {#if nav === 'devices' || nav === 'arrange'}
+    {#if nav === 'arrange'}
       <section class="content">
         <header>
-          <div class="title">{nav === 'arrange' ? 'Arrangement' : 'Devices'}</div>
-          <div class="count mono">{peers.length} {peers.length === 1 ? 'peer' : 'peers'}</div>
+          <div class="title">Arrangement</div>
+          <div class="count mono">side: {activeSide.toUpperCase()}</div>
         </header>
         <p class="subtitle">
-          {nav === 'arrange'
-            ? 'Position each display where it physically sits on your desk.'
-            : 'Devices on your network, ready to share a mouse.'}
+          Position the other display where it physically sits relative to this Mac.
+          Drop anywhere — it snaps to the nearest edge. Configure this on each Mac so the sides are <em>opposite</em>.
         </p>
+
+        <ArrangeDisplays
+          bind:side={activeSide}
+          localName="This Mac"
+          localOs="mac"
+          remoteName={peers[0]?.name ?? 'Other Mac'}
+          remoteOs={peers[0]?.os ?? 'mac'}
+          on:layoutChanged={handleLayoutChanged}/>
+
+        <footer class="actions">
+          {#if status !== 'Stopped'}
+            <div class="mode-pill">{mode === 'Server' ? 'Host' : 'Guest'}</div>
+          {/if}
+        </footer>
+      </section>
+    {:else if nav === 'devices'}
+      <section class="content">
+        <header>
+          <div class="title">Devices</div>
+          <div class="count mono">{peers.length} {peers.length === 1 ? 'peer' : 'peers'}</div>
+        </header>
+        <p class="subtitle">Devices on your network, ready to share a mouse.</p>
 
         {#if status === 'Paused'}
           <PauseBanner peerName={peers[0]?.name ?? 'peer'}/>
@@ -126,6 +147,9 @@
         {/if}
 
         {#if status === 'Stopped'}
+          <p class="arrange-hint mono">
+            Neighbor side: <b>{activeSide.toUpperCase()}</b> · configure under Arrangement before starting
+          </p>
           <div class="role-picker">
             <button class="role-card" on:click={() => { mode = 'Server'; startServer(); }}>
               <div class="role-title">Share this mouse</div>
@@ -165,8 +189,6 @@
         {:else if showEmpty}
           <EmptyState on:start={mode === 'Server' ? startServer : startClient}/>
         {:else}
-          <ArrangeDisplays on:layoutChanged={handleLayoutChanged}/>
-
           <div class="peer-grid">
             <PeerCard
               name="This Mac"
@@ -250,6 +272,7 @@
     background: rgba(0,0,0,0.06); color: var(--ink-2);
   }
   .hint { font-size: 12px; color: var(--ink-2); text-align: center; margin: -16px 0 0; }
+  .arrange-hint { font-size: 11px; color: var(--ink-3); letter-spacing: 0.2px; margin: -6px 0 -4px; }
 
   .host-waiting {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
