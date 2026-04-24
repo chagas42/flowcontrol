@@ -5,6 +5,7 @@ mod coordinator;
 mod engine;
 mod input;
 mod network;
+mod settings;
 mod tray;
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state)
         .setup(|app| {
             tray::build_tray(app.handle())?;
@@ -34,6 +36,8 @@ pub fn run() {
             commands::pair_decline,
             commands::pause_sharing,
             commands::resume_sharing,
+            commands::get_settings,
+            commands::set_settings,
             commands::request_accessibility_permission,
             commands::check_accessibility_permission,
         ])

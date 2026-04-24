@@ -11,6 +11,7 @@ use crate::input::{InputCapture, PermissionStatus};
 
 use crate::coordinator::Coordinator;
 use crate::engine::screen_layout::{NeighborSide, ScreenDimensions};
+use crate::settings::{self, Settings};
 
 // Store the JoinHandle so we can abort the spawned event loop.
 // The Coordinator's Drop impl will ensure cleanup (stop capture, stop network).
@@ -237,4 +238,24 @@ async fn send_pause(state: &State<'_, AppState>, paused: bool) -> Result<(), Str
     } else {
         Err("Coordinator not running".into())
     }
+}
+
+#[tauri::command]
+pub async fn get_settings(app_handle: tauri::AppHandle) -> Result<Settings, String> {
+    Ok(settings::load(&app_handle))
+}
+
+#[tauri::command]
+pub async fn set_settings(new: Settings, app_handle: tauri::AppHandle) -> Result<(), String> {
+    let old = settings::load(&app_handle);
+    settings::save(&app_handle, &new)?;
+    // TODO: if old.mdns_port != new.mdns_port and a coordinator is running,
+    // tear down the advertising/browsing task and re-advertise on the new
+    // port. The network layer currently hard-codes PORT=7878 for TCP and the
+    // mDNS discovery port is separate — flag on the follow-up pass.
+    // TODO: if !old.auto_reconnect && new.auto_reconnect and we have a
+    // last-peer on disk, kick off connect_to_peer(last_peer_id) here.
+    // TODO: integrate tauri-plugin-autostart for launch_on_login.
+    let _ = old;
+    Ok(())
 }
