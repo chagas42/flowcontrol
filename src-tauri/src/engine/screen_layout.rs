@@ -93,6 +93,11 @@ impl ScreenLayout for ScreenLayoutImpl {
     }
 
     fn map_to_remote(&self, local: Point) -> NormalizedPoint {
+        // Unconfigured (ScreenInfo hasn't arrived yet) → emit 0.5, not inf/NaN.
+        // Prevents a race where we forward coords before the peer's dims land.
+        if self.local.width == 0 || self.local.height == 0 {
+            return NormalizedPoint { x: 0.5, y: 0.5 };
+        }
         NormalizedPoint {
             x: (local.x / self.local.width as f64) as f32,
             y: (local.y / self.local.height as f64) as f32,

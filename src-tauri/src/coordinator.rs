@@ -404,6 +404,19 @@ impl Coordinator {
         if self.suppressed {
             return;
         }
+        // Refuse to fire edge detection / forwarding until there's an actually
+        // connected, post-pair peer. Without this guard, a solo server would
+        // go to Remote on the first edge-cross, hide its own cursor, and spam
+        // MouseMove into the void (also with garbage norms because
+        // screen_layout isn't configured yet).
+        let is_post_pair_connected = self.network.state() == ConnectionState::Connected
+            && self.state_machine.state() != State::Pairing;
+        if !is_post_pair_connected
+            && matches!(self.state_machine.state(), State::Local | State::Remote)
+        {
+            // Absorb the event silently; we're not paired, edge detection is off.
+            return;
+        }
         match self.state_machine.state() {
             // Waiting for the user to approve the pair — drop every input.
             State::Pairing => {}
