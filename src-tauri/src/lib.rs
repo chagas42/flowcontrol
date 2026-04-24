@@ -5,6 +5,7 @@ mod coordinator;
 mod engine;
 mod input;
 mod network;
+mod tray;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -19,6 +20,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(app_state)
+        .setup(|app| {
+            tray::build_tray(app.handle())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::start_server,
             commands::start_client,

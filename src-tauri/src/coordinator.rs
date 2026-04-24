@@ -424,9 +424,34 @@ impl Coordinator {
             }
             NetworkEvent::PeersUpdated(peers) => {
                 if let Some(app) = &self.app_handle {
-                    let _ = app.emit("peers-updated", peers);
+                    let _ = app.emit("peers-updated", &peers);
+                    let views: Vec<crate::tray::PeerView> = peers
+                        .into_iter()
+                        .map(|p| crate::tray::PeerView {
+                            name: p.name,
+                            online: true,
+                        })
+                        .collect();
+                    let _ = crate::tray::rebuild_menu(app, &views, self.current_status_str());
                 }
             }
+        }
+    }
+
+    /// Returns the current status string (same logic as `emit_status`) for
+    /// consumers like the tray menu that need to read it synchronously.
+    fn current_status_str(&self) -> &'static str {
+        use crate::engine::state_machine::State;
+        match (self.state_machine.state(), self.network.state()) {
+            (State::Pairing, _) => "Searching",
+            (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
+            (State::Local, ConnectionState::Connected)
+            | (State::Transitioning, ConnectionState::Connected) => "Connected",
+            (_, ConnectionState::Browsing)
+            | (_, ConnectionState::Advertising)
+            | (_, ConnectionState::Connecting) => "Searching",
+            (_, ConnectionState::Disconnected) if self.had_connection => "Disconnected",
+            _ => "Stopped",
         }
     }
 
@@ -630,22 +655,20 @@ impl Coordinator {
     /// changes; safe to call more than once per event — frontend receives a
     /// duplicate emit at worst.
     fn emit_status(&self) {
-        use crate::engine::state_machine::State;
-        let status = match (self.state_machine.state(), self.network.state()) {
-            // Pairing: keep the user in "Searching" visual mode (PairRequestDialog
-            // modal is the actual UI signal during this window).
-            (State::Pairing, _) => "Searching",
-            (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
-            (State::Local, ConnectionState::Connected)
-            | (State::Transitioning, ConnectionState::Connected) => "Connected",
-            (_, ConnectionState::Browsing)
-            | (_, ConnectionState::Advertising)
-            | (_, ConnectionState::Connecting) => "Searching",
-            (_, ConnectionState::Disconnected) if self.had_connection => "Disconnected",
-            _ => "Stopped",
-        };
+        let status = self.current_status_str();
         if let Some(app) = &self.app_handle {
             let _ = app.emit("status-changed", status);
+            // Keep the tray in sync with the same status line and current peers.
+            let views: Vec<crate::tray::PeerView> = self
+                .network
+                .peers()
+                .into_iter()
+                .map(|p| crate::tray::PeerView {
+                    name: p.name,
+                    online: true,
+                })
+                .collect();
+            let _ = crate::tray::rebuild_menu(app, &views, status);
         }
     }
 
