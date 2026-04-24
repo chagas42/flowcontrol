@@ -14,6 +14,7 @@ pub fn run() {
     let app_state = commands::AppState {
         handle: Arc::new(Mutex::new(None)),
         connect_tx: Arc::new(Mutex::new(None)),
+        pair_response_tx: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -23,6 +24,8 @@ pub fn run() {
             commands::start_client,
             commands::stop_coordinator,
             commands::connect_to_peer,
+            commands::pair_accept,
+            commands::pair_decline,
             commands::request_accessibility_permission,
             commands::check_accessibility_permission,
         ])

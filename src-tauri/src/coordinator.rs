@@ -1,10 +1,13 @@
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::engine::{
     edge_detection::EdgeDetectionImpl,
+    fingerprint,
     protocol::Message,
     screen_layout::{
         neighbor_side_to_edge, opposite_edge, NeighborSide, NormalizedPoint, ScreenDimensions,
@@ -14,6 +17,22 @@ use crate::engine::{
 };
 use crate::input::{InputCapture, InputEvent, InputInjector};
 use crate::network::{ConnectionState, NetworkEvent, NetworkLayer, NetworkLayerImpl};
+
+const PAIR_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Server,
+    Client,
+}
+
+const LOCAL_OS: &str = if cfg!(target_os = "macos") {
+    "mac"
+} else if cfg!(target_os = "windows") {
+    "win"
+} else {
+    "other"
+};
 
 #[cfg(target_os = "macos")]
 use crate::{
@@ -74,21 +93,52 @@ pub struct Coordinator {
     /// Used by `emit_status()` to distinguish "never connected" (`Stopped`)
     /// from "was connected, now lost it" (`Disconnected`).
     had_connection: bool,
+
+    /// Whether this peer is the mouse-owning server or the display-only client.
+    role: Role,
+    /// Human-readable device name sent in `PairRequest` and displayed to the peer.
+    device_name: String,
+    /// 16-byte nonce generated per-connection; sent in our `PairRequest`.
+    local_nonce: [u8; 16],
+    /// Peer's nonce, populated when we receive their `PairRequest`.
+    peer_nonce: Option<[u8; 16]>,
+    /// Peer's device name + os, populated when we receive their `PairRequest`.
+    peer_name: Option<String>,
+    peer_os: Option<String>,
+
+    /// User/peer accept/decline channel.
+    pair_response_rx: mpsc::Receiver<bool>,
+    /// 30s auto-decline timer for the Pairing state.
+    pair_timeout_tx: mpsc::Sender<()>,
+    pair_timeout_rx: mpsc::Receiver<()>,
+    pair_timer_handle: Option<JoinHandle<()>>,
 }
 
 impl Coordinator {
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         state_machine: StateMachineImpl,
+        role: Role,
+        device_name: String,
         local_dims: ScreenDimensions,
         side: NeighborSide,
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
+        pair_response_rx: mpsc::Receiver<bool>,
     ) -> Self {
         let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
         let (net_tx, network_rx) = mpsc::channel::<NetworkEvent>(32);
+        let (pair_timeout_tx, pair_timeout_rx) = mpsc::channel::<()>(1);
 
         let mut edge_detection = EdgeDetectionImpl::new();
         edge_detection.configure(neighbor_side_to_edge(side), local_dims, 10.0);
+
+        let local_nonce = {
+            use rand::RngCore;
+            let mut n = [0u8; 16];
+            rand::rngs::OsRng.fill_bytes(&mut n);
+            n
+        };
 
         Self {
             state_machine,
@@ -112,40 +162,62 @@ impl Coordinator {
             connect_rx,
             app_handle,
             had_connection: false,
+
+            role,
+            device_name,
+            local_nonce,
+            peer_nonce: None,
+            peer_name: None,
+            peer_os: None,
+
+            pair_response_rx,
+            pair_timeout_tx,
+            pair_timeout_rx,
+            pair_timer_handle: None,
         }
     }
 
     /// Coordinator seeded as the server (physical mouse machine).
     /// State machine starts in `Local`.
     pub fn new_server(
+        device_name: String,
         local_dims: ScreenDimensions,
         side: NeighborSide,
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
+        pair_response_rx: mpsc::Receiver<bool>,
     ) -> Self {
         Self::new_inner(
             StateMachineImpl::new(),
+            Role::Server,
+            device_name,
             local_dims,
             side,
             app_handle,
             connect_rx,
+            pair_response_rx,
         )
     }
 
     /// Coordinator seeded as the client (display-only machine).
     /// State machine starts in `Remote`.
     pub fn new_client(
+        device_name: String,
         local_dims: ScreenDimensions,
         side: NeighborSide,
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
+        pair_response_rx: mpsc::Receiver<bool>,
     ) -> Self {
         Self::new_inner(
             StateMachineImpl::new_as_client(),
+            Role::Client,
+            device_name,
             local_dims,
             side,
             app_handle,
             connect_rx,
+            pair_response_rx,
         )
     }
 
@@ -229,6 +301,14 @@ impl Coordinator {
                         }
                     }
                 }
+                resp = self.pair_response_rx.recv() => {
+                    let Some(accept) = resp else { break };
+                    self.on_pair_response(accept).await;
+                }
+                timeout = self.pair_timeout_rx.recv() => {
+                    if timeout.is_none() { break; }
+                    self.on_pair_timeout().await;
+                }
             }
         }
     }
@@ -239,6 +319,8 @@ impl Coordinator {
 
     async fn on_input(&mut self, event: InputEvent) {
         match self.state_machine.state() {
+            // Waiting for the user to approve the pair — drop every input.
+            State::Pairing => {}
             State::Local => {
                 if let InputEvent::MouseMove(pt) = event {
                     if let Some(crossed) = self.edge_detection.update(pt) {
@@ -308,15 +390,27 @@ impl Coordinator {
         match event {
             NetworkEvent::StateChanged(ConnectionState::Connected) => {
                 self.had_connection = true;
+                // State machine moves to Pairing. Fire our PairRequest and arm
+                // the 30s auto-decline timer. ScreenInfo waits until pairing
+                // is accepted (see on_pair_response).
                 let cmds = self.state_machine.handle(Event::ConnectionEstablished);
                 self.execute_commands(cmds).await;
                 let _ = self
                     .network
-                    .send(Message::ScreenInfo(self.local_dims))
+                    .send(Message::PairRequest {
+                        nonce: self.local_nonce,
+                        device_name: self.device_name.clone(),
+                        os: LOCAL_OS.to_string(),
+                    })
                     .await;
+                self.arm_pair_timer();
                 self.emit_status();
             }
             NetworkEvent::StateChanged(ConnectionState::Disconnected) => {
+                self.cancel_pair_timer();
+                self.peer_nonce = None;
+                self.peer_name = None;
+                self.peer_os = None;
                 let cmds = self.state_machine.handle(Event::ConnectionLost);
                 self.execute_commands(cmds).await;
                 self.emit_status();
@@ -337,6 +431,22 @@ impl Coordinator {
     }
 
     async fn on_message(&mut self, msg: Message) {
+        // Pair messages are valid in any state; coordinate messages are blocked
+        // while we're still waiting for the user to accept the pair.
+        let is_coord_msg = matches!(
+            msg,
+            Message::MouseMove { .. }
+                | Message::MouseButton { .. }
+                | Message::Scroll { .. }
+                | Message::TransitionIn { .. }
+                | Message::TransitionOut
+                | Message::Ack
+                | Message::ScreenInfo(_)
+        );
+        if is_coord_msg && self.state_machine.state() == State::Pairing {
+            return;
+        }
+
         match msg {
             Message::MouseMove {
                 x_norm,
@@ -351,14 +461,22 @@ impl Coordinator {
                     });
                     self.injector.inject_move(pt, button);
                 }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (x_norm, y_norm, button);
+                }
             }
             Message::MouseButton { button, pressed } => {
                 #[cfg(target_os = "macos")]
                 self.injector.inject_button(button, pressed);
+                #[cfg(not(target_os = "macos"))]
+                let _ = (button, pressed);
             }
             Message::Scroll { dx, dy } => {
                 #[cfg(target_os = "macos")]
                 self.injector.inject_scroll(dx, dy);
+                #[cfg(not(target_os = "macos"))]
+                let _ = (dx, dy);
             }
             Message::TransitionIn { y_norm } => {
                 let cmds = self
@@ -378,6 +496,128 @@ impl Coordinator {
                 }
             }
             Message::TransitionOut => {} // unused in v1
+            Message::PairRequest {
+                nonce,
+                device_name,
+                os,
+            } => {
+                self.peer_nonce = Some(nonce);
+                self.peer_name = Some(device_name.clone());
+                self.peer_os = Some(os.clone());
+                let fp_str = self.derive_fingerprint_string();
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit(
+                        "pair-incoming",
+                        serde_json::json!({
+                            "peer_name": device_name,
+                            "fingerprint": fp_str,
+                            "os": os,
+                        }),
+                    );
+                }
+            }
+            Message::PairAccept => {
+                self.cancel_pair_timer();
+                let cmds = self.state_machine.handle(Event::PairAccepted);
+                self.execute_commands(cmds).await;
+                if self.role == Role::Server {
+                    let _ = self
+                        .network
+                        .send(Message::ScreenInfo(self.local_dims))
+                        .await;
+                }
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("pair-resolved", ());
+                }
+                self.emit_status();
+            }
+            Message::PairDecline => {
+                self.cancel_pair_timer();
+                let cmds = self.state_machine.handle(Event::PairDeclined);
+                self.execute_commands(cmds).await;
+                if let Some(app) = &self.app_handle {
+                    let _ = app.emit("pair-resolved", ());
+                }
+                // Tear the connection down — user on the other side said no.
+                self.network.stop();
+                self.emit_status();
+            }
+        }
+    }
+
+    /// Derives the display fingerprint from our nonce + peer's nonce.
+    /// Ordering is canonical: client nonce first, server nonce second, so
+    /// both peers produce the same string regardless of role.
+    fn derive_fingerprint_string(&self) -> String {
+        let Some(peer) = self.peer_nonce else {
+            return String::new();
+        };
+        let (client_nonce, server_nonce) = match self.role {
+            Role::Server => (&peer, &self.local_nonce),
+            Role::Client => (&self.local_nonce, &peer),
+        };
+        let fp = fingerprint::derive(client_nonce, server_nonce);
+        fingerprint::render(&fp)
+    }
+
+    /// Called from the event loop when the frontend (or tray) dispatches an
+    /// accept/decline. `true` = accept, `false` = decline.
+    async fn on_pair_response(&mut self, accept: bool) {
+        if self.state_machine.state() != State::Pairing {
+            return;
+        }
+        self.cancel_pair_timer();
+        if accept {
+            let _ = self.network.send(Message::PairAccept).await;
+            let cmds = self.state_machine.handle(Event::PairAccepted);
+            self.execute_commands(cmds).await;
+            if self.role == Role::Server {
+                let _ = self
+                    .network
+                    .send(Message::ScreenInfo(self.local_dims))
+                    .await;
+            }
+        } else {
+            let _ = self.network.send(Message::PairDecline).await;
+            let cmds = self.state_machine.handle(Event::PairDeclined);
+            self.execute_commands(cmds).await;
+            self.network.stop();
+        }
+        if let Some(app) = &self.app_handle {
+            let _ = app.emit("pair-resolved", ());
+        }
+        self.emit_status();
+    }
+
+    /// 30s elapsed with no accept/decline — auto-decline.
+    async fn on_pair_timeout(&mut self) {
+        if self.state_machine.state() != State::Pairing {
+            return;
+        }
+        let _ = self.network.send(Message::PairDecline).await;
+        let cmds = self.state_machine.handle(Event::PairDeclined);
+        self.execute_commands(cmds).await;
+        if let Some(app) = &self.app_handle {
+            let _ = app.emit("pair-timeout", ());
+            let _ = app.emit("pair-resolved", ());
+        }
+        self.network.stop();
+        self.emit_status();
+    }
+
+    fn arm_pair_timer(&mut self) {
+        self.cancel_pair_timer();
+        let tx = self.pair_timeout_tx.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(PAIR_TIMEOUT).await;
+            let _ = tx.try_send(());
+        });
+        self.pair_timer_handle = Some(handle);
+    }
+
+    fn cancel_pair_timer(&mut self) {
+        if let Some(h) = self.pair_timer_handle.take() {
+            h.abort();
         }
     }
 
@@ -392,6 +632,9 @@ impl Coordinator {
     fn emit_status(&self) {
         use crate::engine::state_machine::State;
         let status = match (self.state_machine.state(), self.network.state()) {
+            // Pairing: keep the user in "Searching" visual mode (PairRequestDialog
+            // modal is the actual UI signal during this window).
+            (State::Pairing, _) => "Searching",
             (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
             (State::Local, ConnectionState::Connected)
             | (State::Transitioning, ConnectionState::Connected) => "Connected",

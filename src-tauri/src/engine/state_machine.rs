@@ -3,6 +3,10 @@ use super::protocol::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// New: TCP is up but user has not approved the pair yet. Coordinate I/O
+    /// is gated off while in this state; the coordinator just emits the
+    /// pair-incoming event and waits for Accept/Decline or a 30s timeout.
+    Pairing,
     Local,
     Transitioning,
     Remote,
@@ -24,6 +28,11 @@ pub enum Event {
     },
     ConnectionEstablished,
     ConnectionLost,
+    /// User tapped Accept (local or remote side delivered a PairAccept message).
+    PairAccepted,
+    /// User tapped Decline, remote declined, or the 30s timer fired.
+    /// Behaves like ConnectionLost for the state machine.
+    PairDeclined,
 }
 
 #[derive(Debug)]
@@ -48,18 +57,23 @@ pub trait StateMachine: Send {
 
 pub struct StateMachineImpl {
     state: State,
+    /// The state we return to after a successful PairAccepted — `Local` for
+    /// the server (mouse-owning side), `Remote` for the client.
+    home: State,
 }
 
 impl StateMachineImpl {
     pub fn new() -> Self {
         Self {
             state: State::Local,
+            home: State::Local,
         }
     }
 
     pub fn new_as_client() -> Self {
         Self {
             state: State::Remote,
+            home: State::Remote,
         }
     }
 }
@@ -67,6 +81,21 @@ impl StateMachineImpl {
 impl StateMachine for StateMachineImpl {
     fn handle(&mut self, event: Event) -> Vec<Command> {
         match (&self.state, event) {
+            // TCP came up. Gate I/O behind user approval on both sides.
+            (_, Event::ConnectionEstablished) => {
+                self.state = State::Pairing;
+                vec![]
+            }
+            // User (or remote) approved. Land back in our home state.
+            (State::Pairing, Event::PairAccepted) => {
+                self.state = self.home;
+                vec![]
+            }
+            // Either side declined, or 30s timeout fired.
+            (State::Pairing, Event::PairDeclined) => {
+                self.state = self.home;
+                vec![]
+            }
             (State::Local, Event::EdgeCrossed(e)) => {
                 self.state = State::Remote;
                 vec![
@@ -100,16 +129,13 @@ impl StateMachine for StateMachineImpl {
                 self.state = State::Local;
                 vec![]
             }
-            (State::Remote, Event::ConnectionLost) => {
+            (State::Remote, Event::ConnectionLost) if self.home == State::Local => {
+                // Server lost the peer while forwarding — stop suppression and return to Local.
                 self.state = State::Local;
                 vec![Command::StopForwarding]
             }
-            (State::ReturnTransitioning, Event::ConnectionLost) => {
-                self.state = State::Local;
-                vec![]
-            }
             (_, Event::ConnectionLost) => {
-                self.state = State::Local;
+                self.state = self.home;
                 vec![]
             }
             _ => vec![],
@@ -121,7 +147,7 @@ impl StateMachine for StateMachineImpl {
     }
 
     fn reset(&mut self) {
-        self.state = State::Local;
+        self.state = self.home;
     }
 }
 
@@ -189,19 +215,55 @@ mod tests {
     #[test]
     fn test_connection_lost_from_all_states() {
         for start in [
+            State::Pairing,
             State::Local,
             State::Transitioning,
             State::Remote,
             State::ReturnTransitioning,
         ] {
-            let mut sm = StateMachineImpl { state: start };
+            let mut sm = StateMachineImpl {
+                state: start,
+                home: State::Local,
+            };
             sm.handle(Event::ConnectionLost);
             assert_eq!(
                 sm.state(),
                 State::Local,
-                "ConnectionLost from {start:?} should → Local"
+                "ConnectionLost from {start:?} should → home (Local)"
             );
         }
+    }
+
+    #[test]
+    fn test_connection_established_enters_pairing() {
+        let mut server = StateMachineImpl::new();
+        server.handle(Event::ConnectionEstablished);
+        assert_eq!(server.state(), State::Pairing);
+
+        let mut client = StateMachineImpl::new_as_client();
+        client.handle(Event::ConnectionEstablished);
+        assert_eq!(client.state(), State::Pairing);
+    }
+
+    #[test]
+    fn test_pair_accept_returns_to_home() {
+        let mut server = StateMachineImpl::new();
+        server.handle(Event::ConnectionEstablished);
+        server.handle(Event::PairAccepted);
+        assert_eq!(server.state(), State::Local);
+
+        let mut client = StateMachineImpl::new_as_client();
+        client.handle(Event::ConnectionEstablished);
+        client.handle(Event::PairAccepted);
+        assert_eq!(client.state(), State::Remote);
+    }
+
+    #[test]
+    fn test_pair_decline_returns_to_home() {
+        let mut client = StateMachineImpl::new_as_client();
+        client.handle(Event::ConnectionEstablished);
+        client.handle(Event::PairDeclined);
+        assert_eq!(client.state(), State::Remote);
     }
 
     #[test]

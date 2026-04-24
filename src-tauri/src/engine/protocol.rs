@@ -26,4 +26,18 @@ pub enum Message {
     /// Acknowledges receipt of TransitionIn. Sender moves to Remote + StartForwarding.
     Ack,
     ScreenInfo(ScreenDimensions),
+    /// First message over every new TCP connection. Carries a 16-byte
+    /// nonce + the sender's device identity. Each side derives the pair
+    /// fingerprint locally as `blake3(client_nonce || server_nonce)` —
+    /// both sides produce the same string iff both nonces reached the peer
+    /// unmodified.
+    PairRequest {
+        nonce: [u8; 16],
+        device_name: String,
+        os: String,
+    },
+    /// Accept the pair; sender transitions out of Pairing into its home state.
+    PairAccept,
+    /// Decline the pair; both sides tear the connection down.
+    PairDecline,
 }
