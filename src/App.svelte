@@ -93,8 +93,12 @@
 
   $: showEmpty = nav === 'devices' && status === 'Disconnected' && peers.length === 0
                  && !localStorage.getItem('fc_had_peer');
-  // Radar only makes sense for guests (clients) — the host doesn't browse.
-  $: showRadar = nav === 'devices' && status === 'Searching' && mode === 'Client' && peers.length === 0;
+  // Radar stays visible for the entire pre-pair window on the client.
+  // While `peers.length === 0` it shows the scanning animation; when peers
+  // arrive they become clickable markers. Leaving 'Searching' (to Connected/
+  // Remote) is what hides the radar, not the mere presence of a peer.
+  $: showRadar = nav === 'devices' && status === 'Searching' && mode === 'Client';
+  // Host side: Advertising → Searching; no discovery UI, just a pulse.
   $: showHostWaiting = nav === 'devices' && status === 'Searching' && mode === 'Server';
   $: if (peers.length > 0) localStorage.setItem('fc_had_peer', '1');
 </script>
@@ -202,7 +206,7 @@
                 sub={peers[0].os === 'win' ? 'Windows · paired' : 'Mac · paired'}
                 os={peers[0].os ?? 'mac'}
                 active={status === 'Remote'}
-                latency={status === 'Connected' || status === 'Remote' ? 4 : null}/>
+                latency={null}/>
             {:else if status === 'Searching' && mode === 'Client'}
               <PeerCardSkeleton/>
             {:else if mode === 'Server'}

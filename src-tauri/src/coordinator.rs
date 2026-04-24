@@ -559,11 +559,15 @@ impl Coordinator {
         if self.suppressed && self.network.state() == ConnectionState::Connected {
             return "Paused";
         }
+        // Remote + Local only "mean" anything once the TCP is up AND we're
+        // past Pairing. The client-side state_machine defaults to Remote at
+        // construction, so this guard prevents the UI from claiming "Remote"
+        // (and the peer-card from faking a "paired · 4ms" label) before any
+        // handshake has actually happened.
         match (self.state_machine.state(), self.network.state()) {
             (State::Pairing, _) => "Searching",
-            (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
-            (State::Local, ConnectionState::Connected)
-            | (State::Transitioning, ConnectionState::Connected) => "Connected",
+            (State::Remote | State::ReturnTransitioning, ConnectionState::Connected) => "Remote",
+            (State::Local | State::Transitioning, ConnectionState::Connected) => "Connected",
             (_, ConnectionState::Browsing)
             | (_, ConnectionState::Advertising)
             | (_, ConnectionState::Connecting) => "Searching",
