@@ -87,7 +87,9 @@ impl NetworkLayerImpl {
 
     fn set_state(&self, new_state: ConnectionState) {
         *self.state.lock().unwrap() = new_state.clone();
-        let _ = self.event_tx.try_send(NetworkEvent::StateChanged(new_state));
+        let _ = self
+            .event_tx
+            .try_send(NetworkEvent::StateChanged(new_state));
     }
 
     /// Returns the local IP used for routing to the internet (does not send any packets).
@@ -201,12 +203,13 @@ impl NetworkLayer for NetworkLayerImpl {
         let mut accept_shutdown = shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = accept_shutdown.recv() => break,
-                    result = listener.accept() => {
-                        let Ok((stream, _)) = result else { break };
+            // v1: accept exactly one connection, then stop the accept task.
+            // The outer shutdown channel tears us down if the user stops before a peer connects.
+            tokio::select! {
+                biased;
+                _ = accept_shutdown.recv() => {}
+                result = listener.accept() => {
+                    if let Ok((stream, _)) = result {
                         stream.set_nodelay(true).ok();
                         *state.lock().unwrap() = ConnectionState::Connected;
                         let _ = event_tx
@@ -219,8 +222,6 @@ impl NetworkLayer for NetworkLayerImpl {
                             write_tx_slot.clone(),
                             shutdown_tx.clone(),
                         );
-                        // v1: one connection at a time
-                        break;
                     }
                 }
             }
@@ -311,9 +312,7 @@ impl NetworkLayer for NetworkLayerImpl {
             .unwrap()
             .get(&peer.id)
             .copied()
-            .ok_or_else(|| {
-                NetworkError::ConnectionFailed(format!("unknown peer: {}", peer.id))
-            })?;
+            .ok_or_else(|| NetworkError::ConnectionFailed(format!("unknown peer: {}", peer.id)))?;
         self.connect_addr(addr).await
     }
 

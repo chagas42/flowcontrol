@@ -1,13 +1,13 @@
+use serde::Deserialize;
 use std::sync::Arc;
+use tauri::{Emitter, State};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use serde::Deserialize;
-use tauri::{Emitter, State};
 
 #[cfg(target_os = "macos")]
-use crate::input::{InputCapture, PermissionStatus};
-#[cfg(target_os = "macos")]
 use crate::input::macos::MacOSCapture;
+#[cfg(target_os = "macos")]
+use crate::input::{InputCapture, PermissionStatus};
 
 use crate::coordinator::Coordinator;
 use crate::engine::screen_layout::{NeighborSide, ScreenDimensions};
@@ -27,9 +27,9 @@ pub enum SideParam {
     Bottom,
 }
 
-impl Into<NeighborSide> for SideParam {
-    fn into(self) -> NeighborSide {
-        match self {
+impl From<SideParam> for NeighborSide {
+    fn from(val: SideParam) -> Self {
+        match val {
             SideParam::Left => NeighborSide::Left,
             SideParam::Right => NeighborSide::Right,
             SideParam::Top => NeighborSide::Top,
@@ -55,8 +55,13 @@ pub async fn start_server(
     *state.connect_tx.lock().await = None;
 
     let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut coordinator = Coordinator::new_server(ScreenDimensions { width, height }, side.into(), Some(app_handle), rx);
-    
+    let mut coordinator = Coordinator::new_server(
+        ScreenDimensions { width, height },
+        side.into(),
+        Some(app_handle),
+        rx,
+    );
+
     let handle = tokio::spawn(async move {
         // Run until aborted
         let _ = coordinator.run_as_server(&name).await;
@@ -83,7 +88,12 @@ pub async fn start_client(
     *state.connect_tx.lock().await = None;
 
     let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut coordinator = Coordinator::new_client(ScreenDimensions { width, height }, side.into(), Some(app_handle.clone()), rx);
+    let mut coordinator = Coordinator::new_client(
+        ScreenDimensions { width, height },
+        side.into(),
+        Some(app_handle.clone()),
+        rx,
+    );
 
     let handle = tokio::spawn(async move {
         let _ = coordinator.run_as_client().await;
@@ -105,12 +115,16 @@ pub async fn start_client(
 }
 
 #[tauri::command]
-pub async fn stop_coordinator(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_coordinator(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     let mut lock = state.handle.lock().await;
     if let Some(handle) = lock.take() {
         handle.abort();
     }
     *state.connect_tx.lock().await = None;
+    let _ = app_handle.emit("status-changed", "Stopped");
     Ok(())
 }
 
@@ -120,10 +134,12 @@ pub async fn stop_coordinator(state: State<'_, AppState>) -> Result<(), String> 
 pub async fn check_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return MacOSCapture::new().permission_status() == PermissionStatus::Granted;
+        MacOSCapture::new().permission_status() == PermissionStatus::Granted
     }
     #[cfg(not(target_os = "macos"))]
-    true
+    {
+        true
+    }
 }
 
 /// Opens System Settings → Accessibility (one-shot prompt).
@@ -138,10 +154,7 @@ pub async fn request_accessibility_permission() {
 }
 
 #[tauri::command]
-pub async fn connect_to_peer(
-    peer_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn connect_to_peer(peer_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let tx = state.connect_tx.lock().await.clone();
     if let Some(tx) = tx {
         tx.send(peer_id).await.map_err(|e| e.to_string())?;

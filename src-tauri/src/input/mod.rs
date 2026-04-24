@@ -7,9 +7,19 @@ pub enum InputEvent {
     /// Raw hardware delta — sent when suppressing=true (Remote state).
     /// CGEventGetLocation is frozen in suppressing mode; deltas are always valid.
     /// `button`: None = pure move, Some(0) = left drag, Some(1) = right drag.
-    MouseDelta { dx: f64, dy: f64, button: Option<u8> },
-    MouseButton { button: u8, pressed: bool },
-    Scroll { dx: f32, dy: f32 },
+    MouseDelta {
+        dx: f64,
+        dy: f64,
+        button: Option<u8>,
+    },
+    MouseButton {
+        button: u8,
+        pressed: bool,
+    },
+    Scroll {
+        dx: f32,
+        dy: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -57,12 +57,7 @@ pub fn opposite_edge(side: NeighborSide) -> Edge {
 }
 
 pub trait ScreenLayout: Send + Sync {
-    fn configure(
-        &mut self,
-        side: NeighborSide,
-        local: ScreenDimensions,
-        remote: ScreenDimensions,
-    );
+    fn configure(&mut self, side: NeighborSide, local: ScreenDimensions, remote: ScreenDimensions);
     fn map_to_remote(&self, local: Point) -> NormalizedPoint;
     fn map_to_local(&self, norm: NormalizedPoint) -> Point;
     fn watched_edge(&self) -> Option<Edge>;
@@ -78,8 +73,14 @@ impl ScreenLayoutImpl {
     pub fn new() -> Self {
         Self {
             side: None,
-            local: ScreenDimensions { width: 0, height: 0 },
-            remote: ScreenDimensions { width: 0, height: 0 },
+            local: ScreenDimensions {
+                width: 0,
+                height: 0,
+            },
+            remote: ScreenDimensions {
+                width: 0,
+                height: 0,
+            },
         }
     }
 }
@@ -135,8 +136,14 @@ mod tests {
         let mut layout = ScreenLayoutImpl::new();
         layout.configure(
             NeighborSide::Right,
-            ScreenDimensions { width: 1920, height: 1080 },
-            ScreenDimensions { width: 2560, height: 1440 },
+            ScreenDimensions {
+                width: 1920,
+                height: 1080,
+            },
+            ScreenDimensions {
+                width: 2560,
+                height: 1440,
+            },
         );
         let norm = NormalizedPoint { x: 0.25, y: 0.75 };
         let local = layout.map_to_local(norm);

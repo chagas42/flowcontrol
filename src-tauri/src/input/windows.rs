@@ -17,9 +17,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, GetSystemMetrics, PostThreadMessageW, SetWindowsHookExW,
-    ShowCursor, UnhookWindowsHookEx, HHOOK, MSLLHOOKSTRUCT, MSG, SM_CXSCREEN, SM_CYSCREEN,
-    WH_MOUSE_LL, WHEEL_DELTA, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    ShowCursor, UnhookWindowsHookEx, HHOOK, MSG, MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN,
+    WHEEL_DELTA, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 use super::{InputCapture, InputError, InputEvent, InputInjector, PermissionStatus};

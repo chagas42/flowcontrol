@@ -13,8 +13,8 @@ use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::CGPoint;
 use tokio::sync::mpsc;
 
-use crate::engine::screen_layout::Point;
 use super::{InputCapture, InputError, InputEvent, InputInjector, PermissionStatus};
+use crate::engine::screen_layout::Point;
 
 // ---------------------------------------------------------------------------
 // Opaque C types
@@ -172,9 +172,7 @@ unsafe extern "C" fn tap_callback(
     }
 
     match event_type {
-        K_CG_EVENT_MOUSE_MOVED
-        | K_CG_EVENT_LEFT_MOUSE_DRAGGED
-        | K_CG_EVENT_RIGHT_MOUSE_DRAGGED => {
+        K_CG_EVENT_MOUSE_MOVED | K_CG_EVENT_LEFT_MOUSE_DRAGGED | K_CG_EVENT_RIGHT_MOUSE_DRAGGED => {
             if ctx.suppressing.load(Ordering::Relaxed) {
                 // In Remote/suppressing mode: CGEventGetLocation returns the frozen
                 // cursor position (never moves because events are suppressed). Use
@@ -190,26 +188,38 @@ unsafe extern "C" fn tap_callback(
                 let _ = ctx.tx.try_send(InputEvent::MouseDelta { dx, dy, button });
             } else {
                 let pt = CGEventGetLocation(event);
-                let _ = ctx.tx.try_send(InputEvent::MouseMove(Point { x: pt.x, y: pt.y }));
+                let _ = ctx
+                    .tx
+                    .try_send(InputEvent::MouseMove(Point { x: pt.x, y: pt.y }));
             }
         }
         K_CG_EVENT_LEFT_MOUSE_DOWN => {
-            let _ = ctx.tx.try_send(InputEvent::MouseButton { button: 0, pressed: true });
+            let _ = ctx.tx.try_send(InputEvent::MouseButton {
+                button: 0,
+                pressed: true,
+            });
         }
         K_CG_EVENT_LEFT_MOUSE_UP => {
-            let _ = ctx.tx.try_send(InputEvent::MouseButton { button: 0, pressed: false });
+            let _ = ctx.tx.try_send(InputEvent::MouseButton {
+                button: 0,
+                pressed: false,
+            });
         }
         K_CG_EVENT_RIGHT_MOUSE_DOWN => {
-            let _ = ctx.tx.try_send(InputEvent::MouseButton { button: 1, pressed: true });
+            let _ = ctx.tx.try_send(InputEvent::MouseButton {
+                button: 1,
+                pressed: true,
+            });
         }
         K_CG_EVENT_RIGHT_MOUSE_UP => {
-            let _ = ctx.tx.try_send(InputEvent::MouseButton { button: 1, pressed: false });
+            let _ = ctx.tx.try_send(InputEvent::MouseButton {
+                button: 1,
+                pressed: false,
+            });
         }
         K_CG_EVENT_SCROLL_WHEEL => {
-            let dy =
-                CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1) as f32;
-            let dx =
-                CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2) as f32;
+            let dy = CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS1) as f32;
+            let dx = CGEventGetIntegerValueField(event, K_CG_SCROLL_WHEEL_EVENT_DELTA_AXIS2) as f32;
             let _ = ctx.tx.try_send(InputEvent::Scroll { dx, dy });
         }
         _ => {}
@@ -282,15 +292,16 @@ impl InputCapture for MacOSCapture {
         };
 
         if tap.is_null() {
-            unsafe { drop(Box::from_raw(ctx_ptr)); }
+            unsafe {
+                drop(Box::from_raw(ctx_ptr));
+            }
             return Err(InputError::EventTapFailed(
                 "CGEventTapCreate returned null — grant Accessibility permission in System Settings"
                     .into(),
             ));
         }
 
-        let source =
-            unsafe { CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) };
+        let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null_mut(), tap, 0) };
 
         let run_loop = self.run_loop.clone();
 
@@ -328,11 +339,15 @@ impl InputCapture for MacOSCapture {
 
     fn stop(&mut self) {
         if let Some(tap) = self.tap.take() {
-            unsafe { CGEventTapEnable(tap, false); }
+            unsafe {
+                CGEventTapEnable(tap, false);
+            }
 
             let rl = self.run_loop.load(Ordering::SeqCst) as CFRunLoopRef;
             if !rl.is_null() {
-                unsafe { CFRunLoopStop(rl); }
+                unsafe {
+                    CFRunLoopStop(rl);
+                }
             }
             self.run_loop.store(0, Ordering::SeqCst);
 
@@ -342,12 +357,16 @@ impl InputCapture for MacOSCapture {
 
             // Release the mach port reference held by this struct.
             // The thread released the run loop source before exiting.
-            unsafe { CFRelease(tap as *mut c_void); }
+            unsafe {
+                CFRelease(tap as *mut c_void);
+            }
         }
 
         // Safe to drop now: tap disabled, thread exited, callback cannot fire.
         if let Some(ptr) = self.ctx_ptr.take() {
-            unsafe { drop(Box::from_raw(ptr)); }
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
         }
     }
 
@@ -366,8 +385,7 @@ impl InputCapture for MacOSCapture {
         unsafe {
             let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt);
             let value = CFBoolean::true_value();
-            let dict =
-                CFDictionary::<CFString, CFBoolean>::from_CFType_pairs(&[(key, value)]);
+            let dict = CFDictionary::<CFString, CFBoolean>::from_CFType_pairs(&[(key, value)]);
             AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef() as *const c_void);
         }
     }
@@ -403,12 +421,8 @@ impl InputInjector for MacOSInjector {
             _ => (K_CG_EVENT_MOUSE_MOVED, 0u32),
         };
         unsafe {
-            let event = CGEventCreateMouseEvent(
-                std::ptr::null_mut(),
-                event_type,
-                cg_pos,
-                cg_button,
-            );
+            let event =
+                CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, cg_pos, cg_button);
             if !event.is_null() {
                 CGEventPost(K_CG_HID_EVENT_TAP, event);
                 CFRelease(event as *mut c_void);
@@ -425,8 +439,7 @@ impl InputInjector for MacOSInjector {
         };
         let event_type = if pressed { down_type } else { up_type };
         unsafe {
-            let event =
-                CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, pos, cg_button);
+            let event = CGEventCreateMouseEvent(std::ptr::null_mut(), event_type, pos, cg_button);
             if !event.is_null() {
                 // Session level ensures click-to-focus and window dispatch work correctly.
                 CGEventPost(K_CG_SESSION_EVENT_TAP, event);

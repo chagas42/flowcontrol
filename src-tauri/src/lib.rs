@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+mod commands;
+mod coordinator;
 mod engine;
 mod input;
 mod network;
-mod coordinator;
-mod commands;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

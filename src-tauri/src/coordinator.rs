@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 use crate::engine::{
     edge_detection::EdgeDetectionImpl,
     protocol::Message,
-    screen_layout::{neighbor_side_to_edge, opposite_edge, NeighborSide, NormalizedPoint, ScreenDimensions, ScreenLayoutImpl},
+    screen_layout::{
+        neighbor_side_to_edge, opposite_edge, NeighborSide, NormalizedPoint, ScreenDimensions,
+        ScreenLayoutImpl,
+    },
     state_machine::{Command, Event, State, StateMachineImpl},
 };
 use crate::input::{InputCapture, InputEvent, InputInjector};
@@ -66,6 +69,11 @@ pub struct Coordinator {
     /// Channel to receive manual connection triggers from frontend
     connect_rx: mpsc::Receiver<String>,
     app_handle: Option<AppHandle>,
+
+    /// Flips to true the first time we reach `ConnectionState::Connected`.
+    /// Used by `emit_status()` to distinguish "never connected" (`Stopped`)
+    /// from "was connected, now lost it" (`Disconnected`).
+    had_connection: bool,
 }
 
 impl Coordinator {
@@ -103,19 +111,42 @@ impl Coordinator {
             pending_transition_y_norm: None,
             connect_rx,
             app_handle,
+            had_connection: false,
         }
     }
 
     /// Coordinator seeded as the server (physical mouse machine).
     /// State machine starts in `Local`.
-    pub fn new_server(local_dims: ScreenDimensions, side: NeighborSide, app_handle: Option<AppHandle>, connect_rx: mpsc::Receiver<String>) -> Self {
-        Self::new_inner(StateMachineImpl::new(), local_dims, side, app_handle, connect_rx)
+    pub fn new_server(
+        local_dims: ScreenDimensions,
+        side: NeighborSide,
+        app_handle: Option<AppHandle>,
+        connect_rx: mpsc::Receiver<String>,
+    ) -> Self {
+        Self::new_inner(
+            StateMachineImpl::new(),
+            local_dims,
+            side,
+            app_handle,
+            connect_rx,
+        )
     }
 
     /// Coordinator seeded as the client (display-only machine).
     /// State machine starts in `Remote`.
-    pub fn new_client(local_dims: ScreenDimensions, side: NeighborSide, app_handle: Option<AppHandle>, connect_rx: mpsc::Receiver<String>) -> Self {
-        Self::new_inner(StateMachineImpl::new_as_client(), local_dims, side, app_handle, connect_rx)
+    pub fn new_client(
+        local_dims: ScreenDimensions,
+        side: NeighborSide,
+        app_handle: Option<AppHandle>,
+        connect_rx: mpsc::Receiver<String>,
+    ) -> Self {
+        Self::new_inner(
+            StateMachineImpl::new_as_client(),
+            local_dims,
+            side,
+            app_handle,
+            connect_rx,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -126,6 +157,7 @@ impl Coordinator {
     pub async fn run_as_server(&mut self, name: &str) -> Result<(), NetworkError> {
         self.network.start_server(name).await?;
         self.start_capture();
+        self.emit_status();
         self.event_loop().await;
         Ok(())
     }
@@ -135,6 +167,7 @@ impl Coordinator {
     /// Call `network.connect(peer)` separately after peers are discovered.
     pub async fn run_as_client(&mut self) -> Result<(), NetworkError> {
         self.network.start_client().await?;
+        self.emit_status();
         self.event_loop().await;
         Ok(())
     }
@@ -242,7 +275,11 @@ impl Coordinator {
                         let norm = self.screen_layout.map_to_remote(self.virtual_pos);
                         let _ = self
                             .network
-                            .send(Message::MouseMove { x_norm: norm.x, y_norm: norm.y, button })
+                            .send(Message::MouseMove {
+                                x_norm: norm.x,
+                                y_norm: norm.y,
+                                button,
+                            })
                             .await;
                     }
                     InputEvent::MouseMove(_) => {
@@ -270,19 +307,23 @@ impl Coordinator {
     async fn on_network(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::StateChanged(ConnectionState::Connected) => {
-                if let Some(app) = &self.app_handle {
-                    let _ = app.emit("status-changed", "Connected");
-                }
+                self.had_connection = true;
                 let cmds = self.state_machine.handle(Event::ConnectionEstablished);
                 self.execute_commands(cmds).await;
-                let _ = self.network.send(Message::ScreenInfo(self.local_dims)).await;
+                let _ = self
+                    .network
+                    .send(Message::ScreenInfo(self.local_dims))
+                    .await;
+                self.emit_status();
             }
             NetworkEvent::StateChanged(ConnectionState::Disconnected) => {
-                if let Some(app) = &self.app_handle {
-                    let _ = app.emit("status-changed", "Stopped");
-                }
                 let cmds = self.state_machine.handle(Event::ConnectionLost);
                 self.execute_commands(cmds).await;
+                self.emit_status();
+            }
+            NetworkEvent::StateChanged(_) => {
+                // Browsing / Advertising / Connecting — still "Searching" at the UI layer.
+                self.emit_status();
             }
             NetworkEvent::MessageReceived(msg) => {
                 self.on_message(msg).await;
@@ -292,18 +333,22 @@ impl Coordinator {
                     let _ = app.emit("peers-updated", peers);
                 }
             }
-            _ => {}
         }
     }
 
     async fn on_message(&mut self, msg: Message) {
         match msg {
-            Message::MouseMove { x_norm, y_norm, button } => {
+            Message::MouseMove {
+                x_norm,
+                y_norm,
+                button,
+            } => {
                 #[cfg(target_os = "macos")]
                 {
-                    let pt = self
-                        .screen_layout
-                        .map_to_local(NormalizedPoint { x: x_norm, y: y_norm });
+                    let pt = self.screen_layout.map_to_local(NormalizedPoint {
+                        x: x_norm,
+                        y: y_norm,
+                    });
                     self.injector.inject_move(pt, button);
                 }
             }
@@ -329,8 +374,7 @@ impl Coordinator {
                 self.screen_layout
                     .configure(self.neighbor_side, self.local_dims, dims);
                 if let Some(edge) = self.screen_layout.watched_edge() {
-                    self.edge_detection
-                        .configure(edge, self.local_dims, 10.0);
+                    self.edge_detection.configure(edge, self.local_dims, 10.0);
                 }
             }
             Message::TransitionOut => {} // unused in v1
@@ -341,7 +385,29 @@ impl Coordinator {
     // Command execution
     // -----------------------------------------------------------------------
 
+    /// Maps (state-machine state × network connection state) → one of the six
+    /// status strings the frontend listens for. Called whenever either axis
+    /// changes; safe to call more than once per event — frontend receives a
+    /// duplicate emit at worst.
+    fn emit_status(&self) {
+        use crate::engine::state_machine::State;
+        let status = match (self.state_machine.state(), self.network.state()) {
+            (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
+            (State::Local, ConnectionState::Connected)
+            | (State::Transitioning, ConnectionState::Connected) => "Connected",
+            (_, ConnectionState::Browsing)
+            | (_, ConnectionState::Advertising)
+            | (_, ConnectionState::Connecting) => "Searching",
+            (_, ConnectionState::Disconnected) if self.had_connection => "Disconnected",
+            _ => "Stopped",
+        };
+        if let Some(app) = &self.app_handle {
+            let _ = app.emit("status-changed", status);
+        }
+    }
+
     async fn execute_commands(&mut self, cmds: Vec<Command>) {
+        let had_commands = !cmds.is_empty();
         for cmd in cmds {
             match cmd {
                 Command::StartForwarding => {
@@ -421,6 +487,9 @@ impl Coordinator {
                     let _ = self.network.send(msg).await;
                 }
             }
+        }
+        if had_commands {
+            self.emit_status();
         }
     }
 }
