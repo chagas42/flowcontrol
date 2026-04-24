@@ -11,6 +11,10 @@
   },
   "app": {
     "withGlobalTauri": false,
+    "trayIcon": {
+      "iconPath": "icons/tray.png",
+      "iconAsTemplate": true
+    },
     "windows": [
       {
         "title": "FlowControl",

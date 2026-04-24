@@ -171,6 +171,16 @@ unsafe extern "C" fn tap_callback(
         return std::ptr::null_mut();
     }
 
+    // Re-assert disassociation on every event while forwarding.
+    // CGAssociateMouseAndMouseCursorPosition(false) is cleared by macOS
+    // whenever the app loses foreground focus (happens silently when the
+    // hidden cursor slides over another app's window). Without this reassert
+    // the host cursor starts tracking hardware again, producing a "ghost"
+    // cursor that mirrors the guest's.
+    if ctx.suppressing.load(Ordering::Relaxed) {
+        CGAssociateMouseAndMouseCursorPosition(false);
+    }
+
     match event_type {
         K_CG_EVENT_MOUSE_MOVED | K_CG_EVENT_LEFT_MOUSE_DRAGGED | K_CG_EVENT_RIGHT_MOUSE_DRAGGED => {
             if ctx.suppressing.load(Ordering::Relaxed) {
