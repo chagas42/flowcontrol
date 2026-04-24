@@ -10,6 +10,11 @@ pub struct EdgeCrossedEvent {
 pub trait EdgeDetection: Send + Sync {
     fn configure(&mut self, edge: Edge, bounds: ScreenDimensions, threshold: f64);
     fn update(&mut self, pos: Point) -> Option<EdgeCrossedEvent>;
+    /// Clear the internal "was at edge" memory without reconfiguring.
+    /// Required after the cursor returns via injection, because the
+    /// injected point itself is at the edge — if we don't reset, the
+    /// detector thinks we never left and never re-fires.
+    fn reset(&mut self);
 }
 
 pub struct EdgeDetectionImpl {
@@ -71,6 +76,10 @@ impl EdgeDetection for EdgeDetectionImpl {
             }
             None
         }
+    }
+
+    fn reset(&mut self) {
+        self.was_at_edge = false;
     }
 }
 

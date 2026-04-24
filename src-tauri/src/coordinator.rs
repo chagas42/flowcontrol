@@ -34,6 +34,22 @@ const LOCAL_OS: &str = if cfg!(target_os = "macos") {
     "other"
 };
 
+/// Clamp an injected point so it lands on a valid on-screen pixel.
+/// Without this, entries like `x_norm=1.0` produce `pt.x == width`, which is
+/// one past the last valid pixel — macOS sometimes drops the cursor off-screen
+/// in that case, making it look like the cursor vanished entirely.
+fn clamp_to_screen(
+    pt: crate::engine::screen_layout::Point,
+    dims: ScreenDimensions,
+) -> crate::engine::screen_layout::Point {
+    let max_x = (dims.width.saturating_sub(1)) as f64;
+    let max_y = (dims.height.saturating_sub(1)) as f64;
+    crate::engine::screen_layout::Point {
+        x: pt.x.clamp(0.0, max_x),
+        y: pt.y.clamp(0.0, max_y),
+    }
+}
+
 #[cfg(target_os = "macos")]
 use crate::{
     engine::screen_layout::Edge,
@@ -537,6 +553,7 @@ impl Coordinator {
                         x: x_norm,
                         y: y_norm,
                     });
+                    let pt = clamp_to_screen(pt, self.local_dims);
                     self.injector.inject_move(pt, button);
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -791,9 +808,13 @@ impl Coordinator {
                             x: entry_x_norm,
                             y: y_norm,
                         });
+                        let pt = clamp_to_screen(pt, self.local_dims);
                         self.injector.show_cursor();
                         self.injector.inject_move(pt, None);
                     }
+                    // Reset edge_detection so the next edge-cross on this side
+                    // isn't eaten by a stale "was_at_edge = true".
+                    self.edge_detection.reset();
                 }
                 Command::ReturnCursorToLocal { y_norm } => {
                     #[cfg(target_os = "macos")]
@@ -813,11 +834,16 @@ impl Coordinator {
                             x: entry_x_norm,
                             y: y_norm,
                         });
+                        let pt = clamp_to_screen(pt, self.local_dims);
                         self.injector.show_cursor();
                         self.injector.inject_move(pt, None);
                     }
                     #[cfg(not(target_os = "macos"))]
                     let _ = y_norm;
+                    // After returning to Local, clear any stale "was_at_edge" so
+                    // the next edge crossing fires. Without this, bug: cursor
+                    // goes out once and never crosses again.
+                    self.edge_detection.reset();
                     self.emit_cursor_crossed("to_local");
                 }
                 Command::Send(msg) => {
