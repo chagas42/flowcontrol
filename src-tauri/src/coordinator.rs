@@ -598,12 +598,13 @@ impl Coordinator {
                 self.cancel_pair_timer();
                 let cmds = self.state_machine.handle(Event::PairAccepted);
                 self.execute_commands(cmds).await;
-                if self.role == Role::Server {
-                    let _ = self
-                        .network
-                        .send(Message::ScreenInfo(self.local_dims))
-                        .await;
-                }
+                // Both sides publish their own dims so the peer's ScreenLayout
+                // + EdgeDetection can be configured. Idempotent if the peer
+                // already sent theirs.
+                let _ = self
+                    .network
+                    .send(Message::ScreenInfo(self.local_dims))
+                    .await;
                 if let Some(app) = &self.app_handle {
                     let _ = app.emit("pair-resolved", ());
                 }
@@ -649,12 +650,12 @@ impl Coordinator {
             let _ = self.network.send(Message::PairAccept).await;
             let cmds = self.state_machine.handle(Event::PairAccepted);
             self.execute_commands(cmds).await;
-            if self.role == Role::Server {
-                let _ = self
-                    .network
-                    .send(Message::ScreenInfo(self.local_dims))
-                    .await;
-            }
+            // Both sides publish their own dims — see the PairAccept message
+            // branch for the symmetric case.
+            let _ = self
+                .network
+                .send(Message::ScreenInfo(self.local_dims))
+                .await;
         } else {
             let _ = self.network.send(Message::PairDecline).await;
             let cmds = self.state_machine.handle(Event::PairDeclined);
