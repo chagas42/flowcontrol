@@ -112,6 +112,14 @@ pub struct Coordinator {
     pair_timeout_tx: mpsc::Sender<()>,
     pair_timeout_rx: mpsc::Receiver<()>,
     pair_timer_handle: Option<JoinHandle<()>>,
+
+    /// Pause/Resume: when true, keep TCP up but drop every outbound
+    /// MouseMove/Button/Scroll and every inbound injected event. Does NOT
+    /// affect pair messages or TransitionIn/Ack (the FSM stays consistent).
+    suppressed: bool,
+    /// Pause/Resume channel: tray + frontend push `true` for pause,
+    /// `false` for resume. Event loop drains it next tick.
+    pause_rx: mpsc::Receiver<bool>,
 }
 
 impl Coordinator {
@@ -125,6 +133,7 @@ impl Coordinator {
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
         pair_response_rx: mpsc::Receiver<bool>,
+        pause_rx: mpsc::Receiver<bool>,
     ) -> Self {
         let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
         let (net_tx, network_rx) = mpsc::channel::<NetworkEvent>(32);
@@ -174,11 +183,15 @@ impl Coordinator {
             pair_timeout_tx,
             pair_timeout_rx,
             pair_timer_handle: None,
+
+            suppressed: false,
+            pause_rx,
         }
     }
 
     /// Coordinator seeded as the server (physical mouse machine).
     /// State machine starts in `Local`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_server(
         device_name: String,
         local_dims: ScreenDimensions,
@@ -186,6 +199,7 @@ impl Coordinator {
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
         pair_response_rx: mpsc::Receiver<bool>,
+        pause_rx: mpsc::Receiver<bool>,
     ) -> Self {
         Self::new_inner(
             StateMachineImpl::new(),
@@ -196,11 +210,13 @@ impl Coordinator {
             app_handle,
             connect_rx,
             pair_response_rx,
+            pause_rx,
         )
     }
 
     /// Coordinator seeded as the client (display-only machine).
     /// State machine starts in `Remote`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_client(
         device_name: String,
         local_dims: ScreenDimensions,
@@ -208,6 +224,7 @@ impl Coordinator {
         app_handle: Option<AppHandle>,
         connect_rx: mpsc::Receiver<String>,
         pair_response_rx: mpsc::Receiver<bool>,
+        pause_rx: mpsc::Receiver<bool>,
     ) -> Self {
         Self::new_inner(
             StateMachineImpl::new_as_client(),
@@ -218,6 +235,7 @@ impl Coordinator {
             app_handle,
             connect_rx,
             pair_response_rx,
+            pause_rx,
         )
     }
 
@@ -309,8 +327,33 @@ impl Coordinator {
                     if timeout.is_none() { break; }
                     self.on_pair_timeout().await;
                 }
+                paused = self.pause_rx.recv() => {
+                    let Some(paused) = paused else { break };
+                    self.set_paused(paused);
+                }
             }
         }
+    }
+
+    fn set_paused(&mut self, paused: bool) {
+        if self.suppressed == paused {
+            return;
+        }
+        self.suppressed = paused;
+        #[cfg(target_os = "macos")]
+        {
+            // While paused, also stop suppressing hardware events at the
+            // OS layer so the user can keep working on this Mac normally.
+            // Resume restores suppression iff the FSM is in Remote again.
+            if paused {
+                self.capture.suppressing.store(false, Ordering::SeqCst);
+                self.injector.show_cursor();
+            } else if self.state_machine.state() == State::Remote {
+                self.capture.suppressing.store(true, Ordering::SeqCst);
+                self.injector.hide_cursor();
+            }
+        }
+        self.emit_status();
     }
 
     // -----------------------------------------------------------------------
@@ -318,6 +361,11 @@ impl Coordinator {
     // -----------------------------------------------------------------------
 
     async fn on_input(&mut self, event: InputEvent) {
+        // Pause gate: keep TCP up but don't act on any input events.
+        // Edge detection is also disabled — the cursor can't cross while paused.
+        if self.suppressed {
+            return;
+        }
         match self.state_machine.state() {
             // Waiting for the user to approve the pair — drop every input.
             State::Pairing => {}
@@ -442,6 +490,11 @@ impl Coordinator {
     /// consumers like the tray menu that need to read it synchronously.
     fn current_status_str(&self) -> &'static str {
         use crate::engine::state_machine::State;
+        // Paused takes priority while we have an active connection — the TCP
+        // session is live but we're silently dropping input.
+        if self.suppressed && self.network.state() == ConnectionState::Connected {
+            return "Paused";
+        }
         match (self.state_machine.state(), self.network.state()) {
             (State::Pairing, _) => "Searching",
             (State::Remote, _) | (State::ReturnTransitioning, _) => "Remote",
@@ -646,6 +699,19 @@ impl Coordinator {
         }
     }
 
+    /// Fires exactly once per edge crossing (tied to StartForwarding /
+    /// ReturnCursorToLocal commands). The frontend turns this into a toast.
+    fn emit_cursor_crossed(&self, direction: &str) {
+        let Some(app) = &self.app_handle else { return };
+        let _ = app.emit(
+            "cursor-crossed",
+            serde_json::json!({
+                "direction": direction,
+                "peer_name": self.peer_name.clone().unwrap_or_default(),
+            }),
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Command execution
     // -----------------------------------------------------------------------
@@ -701,6 +767,7 @@ impl Coordinator {
                         self.capture.suppressing.store(true, Ordering::SeqCst);
                         self.injector.hide_cursor();
                     }
+                    self.emit_cursor_crossed("to_remote");
                 }
                 Command::StopForwarding => {
                     #[cfg(target_os = "macos")]
@@ -748,6 +815,9 @@ impl Coordinator {
                         self.injector.show_cursor();
                         self.injector.inject_move(pt, None);
                     }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = y_norm;
+                    self.emit_cursor_crossed("to_local");
                 }
                 Command::Send(msg) => {
                     let _ = self.network.send(msg).await;

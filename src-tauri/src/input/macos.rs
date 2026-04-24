@@ -260,14 +260,14 @@ unsafe impl Send for MacOSCapture {}
 
 impl MacOSCapture {
     pub fn new() -> Self {
-        Self {
+        return Self {
             tap: None,
             run_loop: Arc::new(AtomicUsize::new(0)),
             thread: None,
             ctx_ptr: None,
             suppressing: Arc::new(AtomicBool::new(false)),
             grace_frames: Arc::new(AtomicU8::new(0)),
-        }
+        };
     }
 }
 

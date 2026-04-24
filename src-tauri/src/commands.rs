@@ -18,6 +18,7 @@ pub struct AppState {
     pub handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     pub connect_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<String>>>>,
     pub pair_response_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<bool>>>>,
+    pub pause_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<bool>>>>,
 }
 
 #[derive(Deserialize)]
@@ -55,9 +56,11 @@ pub async fn start_server(
     }
     *state.connect_tx.lock().await = None;
     *state.pair_response_tx.lock().await = None;
+    *state.pause_tx.lock().await = None;
 
     let (connect_tx, connect_rx) = tokio::sync::mpsc::channel(32);
     let (pair_tx, pair_rx) = tokio::sync::mpsc::channel(4);
+    let (pause_tx, pause_rx) = tokio::sync::mpsc::channel(4);
     let name_clone = name.clone();
     let mut coordinator = Coordinator::new_server(
         name_clone,
@@ -66,6 +69,7 @@ pub async fn start_server(
         Some(app_handle),
         connect_rx,
         pair_rx,
+        pause_rx,
     );
 
     let handle = tokio::spawn(async move {
@@ -76,6 +80,7 @@ pub async fn start_server(
     *lock = Some(handle);
     *state.connect_tx.lock().await = Some(connect_tx);
     *state.pair_response_tx.lock().await = Some(pair_tx);
+    *state.pause_tx.lock().await = Some(pause_tx);
     Ok(())
 }
 
@@ -94,9 +99,11 @@ pub async fn start_client(
     }
     *state.connect_tx.lock().await = None;
     *state.pair_response_tx.lock().await = None;
+    *state.pause_tx.lock().await = None;
 
     let (connect_tx, connect_rx) = tokio::sync::mpsc::channel(32);
     let (pair_tx, pair_rx) = tokio::sync::mpsc::channel(4);
+    let (pause_tx, pause_rx) = tokio::sync::mpsc::channel(4);
     let mut coordinator = Coordinator::new_client(
         default_client_name(),
         ScreenDimensions { width, height },
@@ -104,6 +111,7 @@ pub async fn start_client(
         Some(app_handle.clone()),
         connect_rx,
         pair_rx,
+        pause_rx,
     );
 
     let handle = tokio::spawn(async move {
@@ -113,6 +121,7 @@ pub async fn start_client(
     *lock = Some(handle);
     *state.connect_tx.lock().await = Some(connect_tx);
     *state.pair_response_tx.lock().await = Some(pair_tx);
+    *state.pause_tx.lock().await = Some(pause_tx);
 
     // Injection via CGEventPost requires Accessibility on the client too.
     // (No event tap needed, but posting to other apps is still gated by TCC.)
@@ -149,6 +158,7 @@ pub async fn stop_coordinator(
     }
     *state.connect_tx.lock().await = None;
     *state.pair_response_tx.lock().await = None;
+    *state.pause_tx.lock().await = None;
     let _ = app_handle.emit("status-changed", "Stopped");
     Ok(())
 }
@@ -203,6 +213,26 @@ async fn send_pair_response(state: &State<'_, AppState>, accept: bool) -> Result
     let tx = state.pair_response_tx.lock().await.clone();
     if let Some(tx) = tx {
         tx.send(accept).await.map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Coordinator not running".into())
+    }
+}
+
+#[tauri::command]
+pub async fn pause_sharing(state: State<'_, AppState>) -> Result<(), String> {
+    send_pause(&state, true).await
+}
+
+#[tauri::command]
+pub async fn resume_sharing(state: State<'_, AppState>) -> Result<(), String> {
+    send_pause(&state, false).await
+}
+
+async fn send_pause(state: &State<'_, AppState>, paused: bool) -> Result<(), String> {
+    let tx = state.pause_tx.lock().await.clone();
+    if let Some(tx) = tx {
+        tx.send(paused).await.map_err(|e| e.to_string())?;
         Ok(())
     } else {
         Err("Coordinator not running".into())

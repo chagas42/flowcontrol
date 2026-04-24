@@ -16,6 +16,7 @@ pub fn run() {
         handle: Arc::new(Mutex::new(None)),
         connect_tx: Arc::new(Mutex::new(None)),
         pair_response_tx: Arc::new(Mutex::new(None)),
+        pause_tx: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -31,6 +32,8 @@ pub fn run() {
             commands::connect_to_peer,
             commands::pair_accept,
             commands::pair_decline,
+            commands::pause_sharing,
+            commands::resume_sharing,
             commands::request_accessibility_permission,
             commands::check_accessibility_permission,
         ])
