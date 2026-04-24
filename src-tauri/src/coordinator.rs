@@ -261,6 +261,10 @@ impl Coordinator {
 
     /// Start as the server: advertise via mDNS, capture input, run event loop.
     pub async fn run_as_server(&mut self, name: &str) -> Result<(), NetworkError> {
+        eprintln!(
+            "[fc] START server name={name} local={}x{} side={:?}",
+            self.local_dims.width, self.local_dims.height, self.neighbor_side
+        );
         self.network.start_server(name).await?;
         self.start_capture();
         self.emit_status();
@@ -272,6 +276,24 @@ impl Coordinator {
     /// The client only injects events received from the server — no local capture needed.
     /// Call `network.connect(peer)` separately after peers are discovered.
     pub async fn run_as_client(&mut self) -> Result<(), NetworkError> {
+        eprintln!(
+            "[fc] START client name={} local={}x{} side={:?}",
+            self.device_name, self.local_dims.width, self.local_dims.height, self.neighbor_side
+        );
+        #[cfg(target_os = "macos")]
+        {
+            use crate::input::{InputCapture, PermissionStatus};
+            let status = crate::input::macos::MacOSCapture::new().permission_status();
+            eprintln!(
+                "[fc]   Accessibility on this (client) Mac: {:?} {}",
+                status,
+                if status == PermissionStatus::Granted {
+                    "✓"
+                } else {
+                    "✗ inject_move will silently fail until granted"
+                }
+            );
+        }
         self.network.start_client().await?;
         self.emit_status();
         self.event_loop().await;
@@ -388,6 +410,10 @@ impl Coordinator {
             State::Local => {
                 if let InputEvent::MouseMove(pt) = event {
                     if let Some(crossed) = self.edge_detection.update(pt) {
+                        eprintln!(
+                            "[fc] EDGE CROSSED edge={:?} y_norm={:.3}",
+                            crossed.edge, crossed.y_norm
+                        );
                         self.pending_transition_y_norm = Some(crossed.y_norm);
                         let cmds = self.state_machine.handle(Event::EdgeCrossed(crossed));
                         self.execute_commands(cmds).await;
@@ -419,6 +445,15 @@ impl Coordinator {
                         }
 
                         let norm = self.screen_layout.map_to_remote(self.virtual_pos);
+                        static TX_COUNT: std::sync::atomic::AtomicU32 =
+                            std::sync::atomic::AtomicU32::new(0);
+                        let n = TX_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if n.is_multiple_of(30) {
+                            eprintln!(
+                                "[fc] TX MouseMove #{n} virtual=({:.0},{:.0}) norm=({:.3},{:.3})",
+                                self.virtual_pos.x, self.virtual_pos.y, norm.x, norm.y
+                            );
+                        }
                         let _ = self
                             .network
                             .send(Message::MouseMove {
@@ -538,6 +573,10 @@ impl Coordinator {
                 | Message::ScreenInfo(_)
         );
         if is_coord_msg && self.state_machine.state() == State::Pairing {
+            eprintln!(
+                "[fc] DROPPED {:?} — state is still Pairing (peer hasn't accepted yet?)",
+                std::mem::discriminant(&msg)
+            );
             return;
         }
 
@@ -554,6 +593,16 @@ impl Coordinator {
                         y: y_norm,
                     });
                     let pt = clamp_to_screen(pt, self.local_dims);
+                    // Sample ~1 in 30 so the terminal isn't flooded at 120Hz.
+                    static MM_COUNT: std::sync::atomic::AtomicU32 =
+                        std::sync::atomic::AtomicU32::new(0);
+                    let n = MM_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if n.is_multiple_of(30) {
+                        eprintln!(
+                            "[fc] MouseMove #{n} norm=({x_norm:.3},{y_norm:.3}) → pt=({:.1},{:.1})",
+                            pt.x, pt.y
+                        );
+                    }
                     self.injector.inject_move(pt, button);
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -574,16 +623,34 @@ impl Coordinator {
                 let _ = (dx, dy);
             }
             Message::TransitionIn { y_norm } => {
+                eprintln!(
+                    "[fc] RX TransitionIn y_norm={y_norm:.3} state_before={:?}",
+                    self.state_machine.state()
+                );
                 let cmds = self
                     .state_machine
                     .handle(Event::TransitionInReceived { y_norm });
+                eprintln!(
+                    "[fc]    state_after={:?} cmds={}",
+                    self.state_machine.state(),
+                    cmds.len()
+                );
                 self.execute_commands(cmds).await;
             }
             Message::Ack => {
+                eprintln!("[fc] RX Ack state_before={:?}", self.state_machine.state());
                 let cmds = self.state_machine.handle(Event::TransitionAcknowledged);
                 self.execute_commands(cmds).await;
             }
             Message::ScreenInfo(dims) => {
+                eprintln!(
+                    "[fc] RX ScreenInfo peer_dims={}x{} local_dims={}x{} side={:?}",
+                    dims.width,
+                    dims.height,
+                    self.local_dims.width,
+                    self.local_dims.height,
+                    self.neighbor_side
+                );
                 self.screen_layout
                     .configure(self.neighbor_side, self.local_dims, dims);
                 if let Some(edge) = self.screen_layout.watched_edge() {
@@ -596,6 +663,7 @@ impl Coordinator {
                 device_name,
                 os,
             } => {
+                eprintln!("[fc] RX PairRequest from {device_name} ({os})");
                 self.peer_nonce = Some(nonce);
                 self.peer_name = Some(device_name.clone());
                 self.peer_os = Some(os.clone());
@@ -612,6 +680,10 @@ impl Coordinator {
                 }
             }
             Message::PairAccept => {
+                eprintln!(
+                    "[fc] RX PairAccept — auto-accepting locally (state_before={:?})",
+                    self.state_machine.state()
+                );
                 self.cancel_pair_timer();
                 let cmds = self.state_machine.handle(Event::PairAccepted);
                 self.execute_commands(cmds).await;
@@ -799,7 +871,8 @@ impl Coordinator {
                 Command::AcceptCursor { y_norm } => {
                     #[cfg(target_os = "macos")]
                     {
-                        let entry_x_norm: f32 = match self.screen_layout.watched_edge() {
+                        let watched = self.screen_layout.watched_edge();
+                        let entry_x_norm: f32 = match watched {
                             Some(Edge::Right) => 1.0,
                             Some(Edge::Left) => 0.0,
                             _ => 0.5, // top/bottom: center horizontally
@@ -809,6 +882,16 @@ impl Coordinator {
                             y: y_norm,
                         });
                         let pt = clamp_to_screen(pt, self.local_dims);
+                        eprintln!(
+                            "[fc] AcceptCursor watched={:?} entry_x_norm={} y_norm={:.3} pt=({:.1},{:.1}) local_dims={}x{}",
+                            watched,
+                            entry_x_norm,
+                            y_norm,
+                            pt.x,
+                            pt.y,
+                            self.local_dims.width,
+                            self.local_dims.height
+                        );
                         self.injector.show_cursor();
                         self.injector.inject_move(pt, None);
                     }
